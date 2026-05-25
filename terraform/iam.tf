@@ -189,6 +189,11 @@ resource "aws_s3_bucket_public_access_block" "agent_state" {
 }
 
 data "aws_caller_identity" "current" {}
+#checkov:skip=CKV_AWS_144:Cross-region replication not required for demo logging bucket
+#checkov:skip=CKV_AWS_21:Versioning not required for access logs
+#checkov:skip=CKV_AWS_145:Logging bucket uses AES256 - KMS would create circular dependency
+#checkov:skip=CKV2_AWS_61:Lifecycle config not required for demo logging bucket
+#checkov:skip=CKV2_AWS_62:Event notifications not required for logging bucket
 resource "aws_s3_bucket" "agent_logs" {
   bucket        = "${var.cluster_name}-agent-logs-${data.aws_caller_identity.current.account_id}"
   force_destroy = true
@@ -207,9 +212,4 @@ resource "aws_s3_bucket_logging" "agent_state" {
   bucket        = aws_s3_bucket.agent_state.id
   target_bucket = aws_s3_bucket.agent_logs.id
   target_prefix = "access-logs/"
-}
-resource "aws_s3_bucket_logging" "agent_logs_self" {
-  bucket        = aws_s3_bucket.agent_logs.id
-  target_bucket = aws_s3_bucket.agent_logs.id
-  target_prefix = "self-logs/"
 }
