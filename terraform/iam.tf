@@ -189,3 +189,27 @@ resource "aws_s3_bucket_public_access_block" "agent_state" {
 }
 
 data "aws_caller_identity" "current" {}
+resource "aws_s3_bucket" "agent_logs" {
+  bucket        = "${var.cluster_name}-agent-logs-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
+  tags          = local.common_tags
+}
+
+resource "aws_s3_bucket_public_access_block" "agent_logs" {
+  bucket                  = aws_s3_bucket.agent_logs.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_logging" "agent_state" {
+  bucket        = aws_s3_bucket.agent_state.id
+  target_bucket = aws_s3_bucket.agent_logs.id
+  target_prefix = "access-logs/"
+}
+resource "aws_s3_bucket_logging" "agent_logs_self" {
+  bucket        = aws_s3_bucket.agent_logs.id
+  target_bucket = aws_s3_bucket.agent_logs.id
+  target_prefix = "self-logs/"
+}
