@@ -23,6 +23,7 @@ This project shows the pattern for constraining them from day one.
 ---
 
 ## Repository Structure
+```
 ai-agent-infra-security/
 ├── terraform/
 │   ├── main.tf          # VPC + EKS cluster with KMS encryption
@@ -33,9 +34,9 @@ ai-agent-infra-security/
 ├── scripts/
 │   └── kill_switch.sh   # Revoke all agent access in under 10 seconds
 └── .github/
-└── workflows/
-└── checkov.yml  # Automated IaC security scan on every PR
-
+    └── workflows/
+        └── checkov.yml  # Automated IaC security scan on every PR
+```
 ---
 
 ## Security Controls
@@ -97,18 +98,23 @@ Automatic annual key rotation enabled.
 ## Proof of Concept
 
 RBAC verification against the live cluster:
-$ kubectl auth can-i list secrets 
---namespace ai-agent 
---as system:serviceaccount:ai-agent:ai-agent-sa
+
+```
+$ kubectl auth can-i list secrets \
+    --namespace ai-agent \
+    --as system:serviceaccount:ai-agent:ai-agent-sa
 no
-$ kubectl auth can-i list pods 
---namespace ai-agent 
---as system:serviceaccount:ai-agent:ai-agent-sa
+
+$ kubectl auth can-i list pods \
+    --namespace ai-agent \
+    --as system:serviceaccount:ai-agent:ai-agent-sa
 yes
-$ kubectl auth can-i list pods 
---namespace kube-system 
---as system:serviceaccount:ai-agent:ai-agent-sa
+
+$ kubectl auth can-i list pods \
+    --namespace kube-system \
+    --as system:serviceaccount:ai-agent:ai-agent-sa
 no
+```
 
 ---
 
