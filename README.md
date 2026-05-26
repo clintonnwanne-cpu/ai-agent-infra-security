@@ -210,5 +210,5 @@ Destroy when not actively using the cluster.
 ## Author
 
 Clinton Nwanne — Cloud Security Infrastructure Engineer, Atlanta GA
-[LinkedIn](https://linkedin.com/in/clinton-nwanne) |
+[LinkedIn](https://www.linkedin.com/in/clintonnwanne/) |
 [GitHub](https://github.com/clintonnwanne-cpu)
