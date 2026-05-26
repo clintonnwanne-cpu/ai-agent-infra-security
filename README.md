@@ -2,7 +2,7 @@
 
 Zero-trust security pattern for AI agents running on EKS. Demonstrates
 least-privilege IAM, Kubernetes RBAC, network isolation, and a hard
-kill switch — all provisioned with Terraform.
+kill switch; all provisioned with Terraform.
 
 ---
 
