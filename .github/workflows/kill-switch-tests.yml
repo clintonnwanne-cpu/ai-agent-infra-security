@@ -1,0 +1,15 @@
+name: Kill switch offline tests
+on:
+  push:
+  pull_request:
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Bash syntax and run tests without cloud credentials
+        run: |
+          bash -n scripts/kill_switch.sh
+          python3 -m unittest discover -s tests -v
