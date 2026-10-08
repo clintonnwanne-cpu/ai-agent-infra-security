@@ -205,11 +205,22 @@ def main():
         require(process.returncode == 0 and summary and summary["status"] == "pass"
                 and summary["passed"] == 1 and len(plans) == 1,
                 "Expected exactly one successful mocked plan")
+        expected_cidrs = json.loads(re.search(r"operator_public_access_cidrs\s*=\s*(\[[^\]]*\])", fixture_text)[1])
+        cluster = next(r for r in plans[0] if r["address"] == CLUSTER)["change"]["after"]["vpc_config"][0]
+        require(cluster["endpoint_public_access"] is True and cluster["endpoint_private_access"] is True
+                and cluster["public_access_cidrs"] == expected_cidrs, "Changed mocked endpoint contract")
+        logs = [r for r in plans[0] if r["address"] == "module.eks.aws_cloudwatch_log_group.this[0]"]
+        require(len(logs) == 1 and logs[0]["change"]["after"]["retention_in_days"] == 90,
+                "Changed mocked retention contract")
         dot = command([binary, "graph", "-type=plan"], isolated, env)
         edges, changes = graph_edges(dot), plans[0]
         result = verify_relationships(changes, edges)
         result.update({"terraform_version": version, "installed_modules": modules,
-                       "mocked_plan": summary, "negative_controls_rejected": negative_controls(changes, edges),
+                       "mocked_plan": summary,
+                       "demo_contract": {"endpoint_public_access": True, "endpoint_private_access": True,
+                                         "cidrs_match_mock_fixture": True, "retention_days": 90,
+                                         "operator_cidrs_verified": False},
+                       "negative_controls_rejected": negative_controls(changes, edges),
                        "commit": command(["git", "rev-parse", "HEAD"], repo, env)})
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(f"Mocked plan and relationship evidence passed; {len(result['negative_controls_rejected'])} negative controls rejected")

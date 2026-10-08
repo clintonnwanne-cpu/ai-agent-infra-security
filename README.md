@@ -351,7 +351,7 @@ AWS references:
 
 Terraform and Kubernetes run in **independent jobs** on PRs targeting `main`
 and pushes to `main`. Each job checks out the event's exact head SHA. A
-Terraform failure cannot skip Kubernetes. Findings remain hard failures;
+Terraform failure cannot skip Kubernetes. Findings outside the two exact approved demo exceptions remain hard failures;
 there is no blanket skip list or soft-fail configuration. Full JSON reports
 are uploaded even when a scan fails. The separate offline test workflow
 runs on pushes and PRs without cloud credentials.
@@ -369,13 +369,11 @@ still enables Terraform module retrieval.
 
 ### Verification evidence and remaining findings
 
-Local closeout verification on October 8, 2026, with the pinned tools,
-independently reproduced in CI at implementation commit
-[`dd557a5`](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/commit/dd557a53a78057251af4e2a9833208c27f778a6f):
-[offline tests](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/actions/runs/37855749409)
-and [IaC validation/scans with JSON artifacts](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/actions/runs/37855749331).
-These links identify the verified implementation run; subsequent commits
-have their own runs in the PR checks.
+Local verification of the required-input/90-day design reproduced the results
+below with the pinned tools. Commit-specific remote evidence is available in
+[PR checks and downloadable artifacts](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/pull/1/checks).
+Earlier evidence at `dd557a5` covered the CI/S3 closeout; it did not test the
+new required operator input or exact exception gate.
 
 | Check | Observed result |
 |---|---|
@@ -383,6 +381,10 @@ have their own runs in the PR checks.
 | Whitespace and Terraform formatting | Passed |
 | Backend-disabled, credential-free Terraform initialization and validation | Passed |
 | Terraform Checkov, including external modules | 379 passed, **11 failed**, 5 explicitly skipped, 0 parsing errors; 155 resources |
+| Exact demo exception gate | 2 accepted; **9 other findings remain blocking**; raw findings unchanged |
+| New gate regression tests | 5 tests passed, including malformed/ambiguous reports, changed settings and unrelated findings |
+| Required-input tests | 1 provider-free test passed across 12 cases, including omitted input, invalid ranges and synthetic valid inputs |
+| Mocked Terraform evidence | Passed; endpoint/private access, fixture CIDR transfer and 90-day retention checked; existing 9 negative controls passed |
 | External-module coverage gate | Passed; 8 evaluated external source files |
 | Kubernetes Checkov | 13 passed, 0 failed, 0 skipped, 0 parsing errors; 5 resources |
 
@@ -393,13 +395,14 @@ inventory of deployed resources or proof of live enforcement. See the
 [PR checks and downloadable scan reports](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/pull/1/checks)
 for commit-specific CI evidence.
 
-The 11 remaining Terraform findings were reviewed against the downloaded
-module source and remain visible, without new suppressions:
+All 11 raw Terraform findings remain visible. Exactly two have approved
+conditional demo exceptions; the other nine remain blocking:
 
 | Check(s) / occurrences | Assessment and next decision |
 |---|---|
-| `CKV_AWS_39`, `CKV_AWS_38` / 2 | Real configuration concern: the EKS public API endpoint is enabled and the module defaults to `0.0.0.0/0`. Choose an operator access path and approved CIDRs, or private-only access, before deployment. |
-| `CKV_AWS_338` / 1 | The EKS CloudWatch log group defaults to 90-day retention; the check requires at least one year. Set retention from actual evidence/compliance needs, not an arbitrary deletion period. |
+| `CKV_AWS_39` / 1 | Approved public-endpoint demo exception on the exact cluster resource, conditional on the required restricted-input contract and private access. See below. |
+| `CKV_AWS_38` / 1 | Still blocking: no operator CIDRs have been supplied. The root now requires validated input with no default; Checkov still flags the unresolved module CIDRs. Mocked documentation addresses do not establish deployable settings. |
+| `CKV_AWS_338` / 1 | Approved exact log-group exception: explicit 90-day retention for the disposable demo. The one-year rule remains visible in the raw report. |
 | `CKV_AWS_58` / 1 | Requires further verification: the root requests secrets encryption, but the scanner flags the module's dynamic encryption block. The credential-free mocked plan expands `resources = ["secrets"]`. The module defaults to creating its own KMS key; do not assume the root-supplied key is selected. Inspect an approved plan and live configuration before claiming the intended key is used. |
 | `CKV_TF_1` / 1 | The upstream EKS module references KMS by registry version `2.1.0`, not commit hash. Both the Checkov coverage gate and the Terraform-installed module check verify the retrieved KMS revision, but neither changes that upstream source declaration. |
 | `CKV_AWS_111`, `CKV_AWS_356` / 2 | The upstream IPv6 CNI policy document contains wildcard write resources. Its creation is disabled by default (`create_cni_ipv6_iam_policy = false`); the mocked plan contains no policy/document instances, although source scanning still reports it. Review permissions before enabling IPv6. |
@@ -407,9 +410,51 @@ module source and remain visible, without new suppressions:
 | `CKV2_AWS_19` / 1 | The VPC EIP is wired to a NAT gateway through `local.nat_gateway_ips`. Checkov 3.3.24 explicitly accepts NAT attachments despite the rule's EC2-focused title; it leaves this allocation expression unresolved. CI checks the planned NAT/EIP instances and dependency path, not live attachment. |
 | `CKV2_AWS_12` / 1 | The VPC module defaults to managing the default security group with empty ingress/egress rules. The graph check still flags the VPC. Confirm the effective rules in an approved plan. |
 
-Endpoint design, retention policy, upstream module changes, and plan/live
-verification are separate follow-up work. CI therefore remains red for the
-11 findings. A passing coverage gate does not waive them.
+Actual operator CIDRs, upstream module changes, and plan/live verification
+remain follow-up work. CI remains red for nine non-exempt findings. No graph,
+conditional-policy, encryption or transitive-module-pin exception was added.
+A passing coverage gate does not waive findings.
+
+### Required operator input and approved demo design
+
+`operator_public_access_cidrs` is a required, nonnullable IPv4 CIDR list with
+**no default**. It rejects an empty list, null elements, malformed ranges,
+IPv6 and `/0`. Omitted input fails a noninteractive Terraform plan; there is
+no open-access fallback. Public and private EKS API access remain enabled.
+The public ranges must be explicitly approved for the actual operator before
+any deployment. Syntax validation does not verify ownership, approval or an
+appropriate range size; broad or combined ranges still require human review.
+No actual operator CIDRs have been supplied or verified in this PR.
+
+Documentation addresses occur only in isolated test fixtures. They must not
+be copied into deployment input. CI supplies no operator variable to Checkov
+and does not substitute test addresses into the scanned Terraform root.
+[AWS documents public CIDR restrictions alongside private endpoint access](https://docs.aws.amazon.com/eks/latest/userguide/cluster-endpoint.html).
+
+CloudWatch control-plane log retention is explicitly **90 days**, as approved
+for this disposable demo. Evidence older than 90 days can expire; teardown
+can remove the log group sooner. This does not satisfy a one-year retention
+requirement. Review retention and durable evidence storage before persistent
+or compliance use. S3 object/version retention is unchanged.
+
+`scripts/check_demo_exceptions.py` accepts only these failed check/resource
+pairs, with the pinned EKS source and root caller:
+
+- `CKV_AWS_39` — `module.eks.aws_eks_cluster.this`: approved laptop-access
+  design, required validated operator input, and private endpoint retained.
+  IAM/RBAC is still required; this is not evidence of live restriction.
+- `CKV_AWS_338` — `module.eks.aws_cloudwatch_log_group.this[0]`: explicit
+  90-day retention with the disposable-demo tradeoff above.
+
+The gate parses root and upstream HCL to verify the required input, exact
+validation expression, endpoint settings/wiring and retention setting/wiring.
+It rejects missing/ambiguous targets, changed settings, overrides, unexpected
+scanner statuses/exits/report shapes, parsing errors and unapproved skips.
+Any other failed check remains blocking, including the same check on another
+resource. A module-level skip would propagate into descendants, so none was
+added. The five existing S3 skips remain separately scoped in `iam.tf`.
+The gate does not rewrite raw JSON: artifacts contain both the full findings
+and `checkov-demo-exceptions.json` with accepted pairs and blocking findings.
 
 ### Credential-free relationship evidence
 
@@ -423,12 +468,13 @@ module changes fail closed. It does not make the upstream version-tag
 reference immutable or waive `CKV_TF_1`.
 
 The verifier copies the root `.tf` files into a temporary directory and uses
-only `tests/iac/relationships.tftest.hcl`: all five providers are mocked,
+only `tests/iac/relationships.tftest.hcl` for the full root: all five providers are mocked,
 `command = plan`, and credentials, profiles and `TF_VAR_*` settings are
 removed from the subprocess environment. It executes no apply. The mocked
 IAM policy-document values are placeholders; this is not an IAM policy or
 AWS authorization test. The existing 20 kill-switch/verifier tests remain
-unchanged.
+unchanged. A separate provider-free test uses only variable declarations to
+check omitted and invalid inputs.
 
 Assertions require expanded secrets encryption, no instantiated IPv6 CNI
 policy/document, and the expected cluster, node launch template, security
@@ -521,6 +567,12 @@ under-ten-second revocation claim is supported.
 
 ## Deploy
 
+Before an approved deployment, supply the actual reviewed
+`operator_public_access_cidrs` through your Terraform input mechanism.
+No value is provided here. Without it, `terraform plan -input=false` fails.
+Do not use the mocked documentation addresses. The blocking findings and
+live-verification limits above remain unresolved.
+
 ```bash
 # Configure AWS credentials
 aws configure
@@ -528,7 +580,7 @@ aws configure
 # Initialize and deploy infrastructure
 cd terraform
 terraform init
-terraform plan -out=tfplan
+terraform plan -input=false -out=tfplan
 terraform apply tfplan
 
 # Connect kubectl to the cluster

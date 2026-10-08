@@ -4,6 +4,19 @@ variable "aws_region" {
   default     = "us-east-2"
 }
 
+variable "operator_public_access_cidrs" {
+  description = "Explicitly approved operator IPv4 CIDRs for the public EKS API. Required; no open-access fallback. Approval and address ownership must be reviewed separately."
+  type        = list(string)
+  nullable    = false
+
+  validation {
+    condition = try(length(var.operator_public_access_cidrs) > 0 && alltrue([
+      for cidr in var.operator_public_access_cidrs : can(cidrnetmask(cidr)) && try(tonumber(split("/", cidr)[1]) > 0, false)
+    ]), false)
+    error_message = "Supply a nonempty list of approved IPv4 CIDRs with prefixes 1 through 32; null, malformed, IPv6 and /0 values are forbidden."
+  }
+}
+
 variable "cluster_name" {
   description = "Name prefix for all resources"
   type        = string

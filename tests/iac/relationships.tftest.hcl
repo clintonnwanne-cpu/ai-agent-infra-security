@@ -30,4 +30,9 @@ mock_provider "cloudinit" {}
 mock_provider "null" {}
 run "unchanged_root_mock_plan" {
   command = plan
+  # RFC 5737 documentation address, ONLY for this fully mocked plan.
+  # This is not an approved operator address or a deployment default.
+  variables {
+    operator_public_access_cidrs = ["192.0.2.1/32"]
+  }
 }
