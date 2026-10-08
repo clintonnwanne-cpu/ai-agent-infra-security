@@ -369,7 +369,13 @@ still enables Terraform module retrieval.
 
 ### Verification evidence and remaining findings
 
-Local closeout verification on October 8, 2026, with the pinned tools:
+Local closeout verification on October 8, 2026, with the pinned tools,
+independently reproduced in CI at implementation commit
+[`dd557a5`](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/commit/dd557a53a78057251af4e2a9833208c27f778a6f):
+[offline tests](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/actions/runs/37855749409)
+and [IaC validation/scans with JSON artifacts](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/actions/runs/37855749331).
+These links identify the verified implementation run; subsequent commits
+have their own runs in the PR checks.
 
 | Check | Observed result |
 |---|---|
