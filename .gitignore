@@ -4,3 +4,5 @@ terraform/.terraform/
 *.tfstate.backup
 __pycache__/
 *.pyc
+.external_modules/
+checkov-*.json

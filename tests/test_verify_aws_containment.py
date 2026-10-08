@@ -52,7 +52,7 @@ class VerificationTests(unittest.TestCase):
             verify.probes("role", Path("/tmp/token"), "us-east-2", {"AWS_ACCESS_KEY_ID": "old"})
         self.assertEqual(call.call_args_list[0].args[0][:2], ["ec2", "describe-instances"])
         self.assertIn("--no-sign-request", call.call_args_list[1].args[0])
-        self.assertIn("file:///tmp/token", call.call_args_list[1].args[0])
+        self.assertIn(Path("/tmp/token").resolve().as_uri(), call.call_args_list[1].args[0])
 
 
     def invoke_main(self, phase, directory, statuses=("success", "success"), evidence=True,

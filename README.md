@@ -48,7 +48,7 @@ ai-agent-infra-security/
 ### 1. AWS IAM — Least-Privilege with Explicit Denies
 
 Two-policy pattern: an Allow policy granting minimum required
-permissions, and a Deny policy that explicitly blocks privilege
+permissions, and a Deny policy that explicitly blocks
 the listed escalation actions even if additional Allow policies are added.
 This is not a comprehensive block on every IAM write operation.
 
@@ -349,12 +349,116 @@ AWS references:
 
 ## IaC Security Scanning
 
-Checkov runs automatically on every push and pull request via
-GitHub Actions. Scans both Terraform and Kubernetes manifests.
+Terraform and Kubernetes run in **independent jobs** on PRs targeting `main`
+and pushes to `main`. Each job checks out the event's exact head SHA. A
+Terraform failure cannot skip Kubernetes. Findings remain hard failures;
+there is no blanket skip list or soft-fail configuration. Full JSON reports
+are uploaded even when a scan fails. The separate offline test workflow
+runs on pushes and PRs without cloud credentials.
 
-Initial scan: 7 findings
-After fixes: resolved KMS key policy (CKV2_AWS_64) and S3 access
-logging (CKV_AWS_18). Remaining findings documented with rationale.
+CI pins Checkov **3.3.24**, Terraform **1.9.8**, and action commit SHAs.
+The root modules are pinned to the commits for VPC **5.21.0** and EKS
+**20.37.2**, compatible with the locked AWS provider **5.100.0**. The EKS
+module selects KMS **2.1.0** internally. Provider checksums are recorded for
+Linux AMD64 and macOS ARM64. Checkov downloads external modules and the
+coverage step requires evaluated VPC, EKS, managed-node-group, and KMS
+source files at the expected revisions. Missing reports, missing module
+coverage, and parsing errors fail that step. `--skip-download` disables
+Checkov's platform policy download; `--download-external-modules true`
+still enables Terraform module retrieval.
+
+### Verification evidence and remaining findings
+
+Local closeout verification on October 8, 2026, with the pinned tools:
+
+| Check | Observed result |
+|---|---|
+| Offline orchestration and verifier suite | 20 tests passed; Bash syntax passed |
+| Whitespace and Terraform formatting | Passed |
+| Backend-disabled, credential-free Terraform initialization and validation | Passed |
+| Terraform Checkov, including external modules | 379 passed, **11 failed**, 5 explicitly skipped, 0 parsing errors; 155 resources |
+| External-module coverage gate | Passed; 8 evaluated external source files |
+| Kubernetes Checkov | 13 passed, 0 failed, 0 skipped, 0 parsing errors; 5 resources |
+
+These results supersede the earlier top-level-only run at `918eaaf`
+(73 passed, 10 failed, Kubernetes skipped). Scan counts describe static
+source checks, including conditional module resources; they are not an
+inventory of deployed resources or proof of live enforcement. See the
+[PR checks and downloadable scan reports](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/pull/1/checks)
+for commit-specific CI evidence.
+
+The 11 remaining Terraform findings were reviewed against the downloaded
+module source and remain visible, without new suppressions:
+
+| Check(s) / occurrences | Assessment and next decision |
+|---|---|
+| `CKV_AWS_39`, `CKV_AWS_38` / 2 | Real configuration concern: the EKS public API endpoint is enabled and the module defaults to `0.0.0.0/0`. Choose an operator access path and approved CIDRs, or private-only access, before deployment. |
+| `CKV_AWS_338` / 1 | The EKS CloudWatch log group defaults to 90-day retention; the check requires at least one year. Set retention from actual evidence/compliance needs, not an arbitrary deletion period. |
+| `CKV_AWS_58` / 1 | Requires further verification: the root requests secrets encryption, but the scanner flags the module's dynamic encryption block. The module defaults to creating its own KMS key; do not assume the root-supplied key is selected. Inspect an approved plan and live configuration before claiming the intended key is used. |
+| `CKV_TF_1` / 1 | The upstream EKS module references KMS by registry version `2.1.0`, not commit hash. The coverage gate verifies the retrieved KMS revision, but this does not change that upstream source declaration. |
+| `CKV_AWS_111`, `CKV_AWS_356` / 2 | The upstream IPv6 CNI policy document contains wildcard write resources. Its creation is disabled by default (`create_cni_ipv6_iam_policy = false`); source scanning still reports it. Confirm absence in an approved plan; review permissions before enabling IPv6. |
+| `CKV2_AWS_5` / 2 | Source links cluster/node security groups through locals and node-group inputs. The scanner does not resolve those attachments here. Confirm attachment in an approved plan; these are not accepted security exceptions. |
+| `CKV2_AWS_19` / 1 | The VPC EIP is wired to a NAT gateway through `local.nat_gateway_ips`, rather than directly to an EC2 instance. Review the resulting NAT attachment in an approved plan. |
+| `CKV2_AWS_12` / 1 | The VPC module defaults to managing the default security group with empty ingress/egress rules. The graph check still flags the VPC. Confirm the effective rules in an approved plan. |
+
+Endpoint design, retention policy, upstream module changes, and plan/live
+verification are separate follow-up work. CI therefore remains red for the
+11 findings. A passing coverage gate does not waive them.
+
+### Resource-specific demo exceptions and S3 controls
+
+Both `aws_s3_bucket.agent_state` and `aws_s3_bucket.agent_logs` carry
+in-resource Checkov comments for `CKV_AWS_144` (no cross-region recovery
+target in this disposable, single-region demo) and `CKV2_AWS_62` (no
+object-event consumer). These are four explicit exceptions, not production
+recommendations; reassess them before persistent use.
+
+Only `aws_s3_bucket.agent_logs` skips `CKV_AWS_145`: AWS requires **SSE-S3**
+for S3 server access-log destinations. Explicit `AES256` default encryption
+is configured. The old circular-dependency explanation was unsupported and
+has been removed. Versioning is enabled on both buckets. Each lifecycle
+rule aborts incomplete multipart uploads after seven days, following the
+AWS example; it does **not** expire completed objects or historical versions.
+The existing `force_destroy = true` makes these buckets disposable and must
+be reconsidered before storing durable data.
+
+Log delivery grants only `s3:PutObject` to `logging.s3.amazonaws.com`, only
+under `agent_logs/access-logs/*`, with the source bucket ARN and source
+account required. Logging depends on the destination policy and encryption
+configuration. Delivery is best effort and has not been tested against AWS.
+No recursive logging is configured on the destination bucket.
+
+References:
+- [AWS log-delivery permissions, destination encryption, and destination logging guidance](https://docs.aws.amazon.com/AmazonS3/latest/userguide/enable-server-access-logging.html)
+- [AWS incomplete-multipart lifecycle example](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpu-abort-incomplete-mpu-lifecycle-config.html)
+- [Checkov resource-level suppression syntax](https://www.checkov.io/2.Basics/Suppressing%20and%20Skipping%20Policies.html)
+
+Reproduce without AWS credentials (module/provider downloads require internet):
+
+```bash
+bash -n scripts/kill_switch.sh
+python3 -m unittest discover -s tests -v
+git diff --check
+terraform fmt -check -recursive terraform
+terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
+terraform -chdir=terraform validate
+python3 -m pip install checkov==3.3.24
+checkov -d terraform --framework terraform --download-external-modules true \
+  --external-modules-download-path .external_modules --skip-download \
+  --compact -o cli -o json --output-file-path console,checkov-terraform.json
+# Run the next commands even when Terraform findings return a nonzero exit.
+python3 scripts/check_scan_coverage.py terraform checkov-terraform.json
+checkov -d k8s --framework kubernetes --skip-download \
+  --compact -o cli -o json --output-file-path console,checkov-kubernetes.json
+python3 scripts/check_scan_coverage.py kubernetes checkov-kubernetes.json
+```
+
+All evidence above is offline orchestration or static analysis. Live AWS/EKS
+containment, network-policy enforcement, S3 log delivery, and agent KMS/S3
+functionality remain unverified. The agent's explicit `kms:Decrypt` deny
+still conflicts with reading its KMS-encrypted bucket; the live-verification
+section intentionally uses an EC2 read baseline. No universal or
+under-ten-second revocation claim is supported.
 
 ---
 
@@ -365,9 +469,9 @@ logging (CKV_AWS_18). Remaining findings documented with rationale.
 | jq | 1.6+ | https://jqlang.org |
 | Python | 3.10+ (verification) | https://www.python.org |
 | AWS CLI | v2+ | https://aws.amazon.com/cli |
-| Terraform | >= 1.5.0 | https://developer.hashicorp.com/terraform/install |
+| Terraform | 1.9.8 tested (>= 1.5.0 required) | https://developer.hashicorp.com/terraform/install |
 | kubectl | any | https://kubernetes.io/docs/tasks/tools |
-| Checkov | latest | `pip3 install checkov` |
+| Checkov | 3.3.24 | `pip3 install checkov==3.3.24` |
 
 ---
 
