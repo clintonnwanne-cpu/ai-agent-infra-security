@@ -28,8 +28,18 @@ jobs:
       - run: |
           git diff --check
           terraform fmt -check -recursive terraform
+          terraform fmt -check -recursive tests/iac
           terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
           terraform -chdir=terraform validate -no-color
+      - name: Verify mocked-plan relationships and installed KMS revision
+        run: python3 scripts/verify_iac_evidence.py
+      - name: Preserve credential-free relationship evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: iac-relationship-evidence
+          path: iac-evidence.json
+          if-no-files-found: error
 
   terraform:
     name: Checkov — Terraform with external modules

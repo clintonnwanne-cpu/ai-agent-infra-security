@@ -400,16 +400,52 @@ module source and remain visible, without new suppressions:
 |---|---|
 | `CKV_AWS_39`, `CKV_AWS_38` / 2 | Real configuration concern: the EKS public API endpoint is enabled and the module defaults to `0.0.0.0/0`. Choose an operator access path and approved CIDRs, or private-only access, before deployment. |
 | `CKV_AWS_338` / 1 | The EKS CloudWatch log group defaults to 90-day retention; the check requires at least one year. Set retention from actual evidence/compliance needs, not an arbitrary deletion period. |
-| `CKV_AWS_58` / 1 | Requires further verification: the root requests secrets encryption, but the scanner flags the module's dynamic encryption block. The module defaults to creating its own KMS key; do not assume the root-supplied key is selected. Inspect an approved plan and live configuration before claiming the intended key is used. |
-| `CKV_TF_1` / 1 | The upstream EKS module references KMS by registry version `2.1.0`, not commit hash. The coverage gate verifies the retrieved KMS revision, but this does not change that upstream source declaration. |
-| `CKV_AWS_111`, `CKV_AWS_356` / 2 | The upstream IPv6 CNI policy document contains wildcard write resources. Its creation is disabled by default (`create_cni_ipv6_iam_policy = false`); source scanning still reports it. Confirm absence in an approved plan; review permissions before enabling IPv6. |
+| `CKV_AWS_58` / 1 | Requires further verification: the root requests secrets encryption, but the scanner flags the module's dynamic encryption block. The credential-free mocked plan expands `resources = ["secrets"]`. The module defaults to creating its own KMS key; do not assume the root-supplied key is selected. Inspect an approved plan and live configuration before claiming the intended key is used. |
+| `CKV_TF_1` / 1 | The upstream EKS module references KMS by registry version `2.1.0`, not commit hash. Both the Checkov coverage gate and the Terraform-installed module check verify the retrieved KMS revision, but neither changes that upstream source declaration. |
+| `CKV_AWS_111`, `CKV_AWS_356` / 2 | The upstream IPv6 CNI policy document contains wildcard write resources. Its creation is disabled by default (`create_cni_ipv6_iam_policy = false`); the mocked plan contains no policy/document instances, although source scanning still reports it. Review permissions before enabling IPv6. |
 | `CKV2_AWS_5` / 2 | Source links cluster/node security groups through locals and node-group inputs. The scanner does not resolve those attachments here. Confirm attachment in an approved plan; these are not accepted security exceptions. |
-| `CKV2_AWS_19` / 1 | The VPC EIP is wired to a NAT gateway through `local.nat_gateway_ips`, rather than directly to an EC2 instance. Review the resulting NAT attachment in an approved plan. |
+| `CKV2_AWS_19` / 1 | The VPC EIP is wired to a NAT gateway through `local.nat_gateway_ips`. Checkov 3.3.24 explicitly accepts NAT attachments despite the rule's EC2-focused title; it leaves this allocation expression unresolved. CI checks the planned NAT/EIP instances and dependency path, not live attachment. |
 | `CKV2_AWS_12` / 1 | The VPC module defaults to managing the default security group with empty ingress/egress rules. The graph check still flags the VPC. Confirm the effective rules in an approved plan. |
 
 Endpoint design, retention policy, upstream module changes, and plan/live
 verification are separate follow-up work. CI therefore remains red for the
 11 findings. A passing coverage gate does not waive them.
+
+### Credential-free relationship evidence
+
+`python3 scripts/verify_iac_evidence.py` runs after initialization in the
+Terraform validation job. It verifies that the installed EKS, VPC and KMS
+modules are independent, pristine Git checkouts at the reviewed commits.
+In particular, Terraform's own KMS checkout must be
+`5508c9cdd6fdb0ed4dcf399f54ba02fb8c31bd4b`; this supplements the scanner's
+separate download check. Missing Git metadata, a changed revision, or local
+module changes fail closed. It does not make the upstream version-tag
+reference immutable or waive `CKV_TF_1`.
+
+The verifier copies the root `.tf` files into a temporary directory and uses
+only `tests/iac/relationships.tftest.hcl`: all five providers are mocked,
+`command = plan`, and credentials, profiles and `TF_VAR_*` settings are
+removed from the subprocess environment. It executes no apply. The mocked
+IAM policy-document values are placeholders; this is not an IAM policy or
+AWS authorization test. The existing 20 kill-switch/verifier tests remain
+unchanged.
+
+Assertions require expanded secrets encryption, no instantiated IPv6 CNI
+policy/document, and the expected cluster, node launch template, security
+groups, NAT, EIP and default-group resources. Terraform dependency paths
+supply additional source evidence for the network relationships. Explicitly
+configured default-group rules fail the check. The report records unknown
+computed rules/IDs as unknown: a dependency path can include ordering edges,
+and neither a path nor a mocked plan proves live attachment or enforcement.
+These checks rely on the reviewed, immutable EKS/VPC source and do not assert
+that Checkov must keep producing a particular failure count.
+
+Nine negative controls alter only the captured evidence (remove encryption,
+inject an IPv6 policy, remove the launch template/EIP, sever each dependency
+path, or inject a default-group rule). Each must be rejected. CI uploads the
+compact `iac-relationship-evidence` JSON artifact with the checked commit,
+module revisions, dependency paths, unknowns and negative-control outcomes.
+The large mocked provider schemas are temporary and are not published.
 
 ### Resource-specific demo exceptions and S3 controls
 
@@ -448,6 +484,8 @@ git diff --check
 terraform fmt -check -recursive terraform
 terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
 terraform -chdir=terraform validate
+terraform fmt -check -recursive tests/iac
+python3 scripts/verify_iac_evidence.py
 python3 -m pip install checkov==3.3.24
 checkov -d terraform --framework terraform --download-external-modules true \
   --external-modules-download-path .external_modules --skip-download \
