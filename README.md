@@ -1,8 +1,9 @@
 # AI Agent Infrastructure Security
 
 Zero-trust security pattern for AI agents running on EKS. Demonstrates
-least-privilege IAM, Kubernetes RBAC, network isolation, and a hard
-kill switch; all provisioned with Terraform.
+least-privilege IAM, Kubernetes RBAC, network isolation, and an emergency
+containment switch. Terraform defines the AWS infrastructure; Kubernetes
+manifests define the agent's namespace identity and network controls.
 
 ---
 
@@ -32,10 +33,13 @@ ai-agent-infra-security/
 ├── k8s/
 │   └── rbac.yaml        # Namespace, ServiceAccount, Role, RoleBinding, NetworkPolicy
 ├── scripts/
-│   └── kill_switch.sh   # Revoke all agent access in under 10 seconds
+│   ├── kill_switch.sh   # Persistent IAM quarantine + Kubernetes cleanup
+│   └── verify_aws_containment.py # Baseline and post-shutdown AWS probes
+├── tests/               # Offline orchestration and verifier tests
 └── .github/
     └── workflows/
-        └── checkov.yml  # Automated IaC security scan on every PR
+        ├── checkov.yml  # Automated IaC security scan on every PR
+        └── kill-switch-tests.yml # Offline tests; no cloud credentials
 ```
 ---
 
@@ -44,8 +48,9 @@ ai-agent-infra-security/
 ### 1. AWS IAM — Least-Privilege with Explicit Denies
 
 Two-policy pattern: an Allow policy granting minimum required
-permissions, and a Deny policy that explicitly blocks privilege
-escalation paths regardless of any future Allow policies added.
+permissions, and a Deny policy that explicitly blocks
+the listed escalation actions even if additional Allow policies are added.
+This is not a comprehensive block on every IAM write operation.
 
 **Agent ALLOW policy:**
 - Read EKS cluster metadata
@@ -85,8 +90,9 @@ provider. No long-lived access keys anywhere.
 
 ### 4. NetworkPolicy — Egress Restriction
 
-Agent pods: outbound port 443 (AWS APIs) and port 53 (DNS) only.
-All inbound connections blocked.
+The manifest permits outbound TCP 443 and 6443 and UDP 53, without
+destination restrictions. It does not restrict port 443 to AWS endpoints.
+Ingress is denied if the cluster network implementation enforces NetworkPolicy.
 
 ### 5. KMS Encryption
 
@@ -97,7 +103,8 @@ Automatic annual key rotation enabled.
 
 ## Proof of Concept
 
-RBAC verification against the live cluster:
+Example expected RBAC results for the supplied manifest (not a current
+live-cluster verification):
 
 ```
 $ kubectl auth can-i list secrets \
@@ -120,39 +127,492 @@ no
 
 ## The Kill Switch
 
-Single script. Revokes both Kubernetes RBAC and AWS IAM
-simultaneously. Agent loses all access in under 10 seconds.
+This script requests containment of the **dedicated agent role** and its
+namespace identity. It does not promise that all access ends within ten
+seconds. AWS IAM changes are eventually consistent; API success and policy
+read-back are not proof that every service has enforced the change.
+Kubernetes deletion is asynchronous. Neither step undoes completed actions.
 
-$ ../scripts/kill_switch.sh
-[2026-05-25T21:00:59] === AI AGENT KILL SWITCH INITIATED ===
-[2026-05-25T21:00:59] Step 1/4: Deleting RoleBinding
-rolebinding "ai-agent-rolebinding" deleted from ai-agent namespace
-[2026-05-25T21:01:00] Step 2/4: Deleting ServiceAccount
-serviceaccount "ai-agent-sa" deleted from ai-agent namespace
-[2026-05-25T21:01:02] Step 3/4: Detaching allow policy from IAM role
-[2026-05-25T21:01:03] Step 4/4: Detaching deny policy from IAM role
-[2026-05-25T21:01:04] === KILL SWITCH COMPLETE ===
-[2026-05-25T21:01:04]     Kubernetes RBAC : REVOKED
-[2026-05-25T21:01:04]     AWS IAM         : REVOKED
-[2026-05-25T21:01:04] To restore access: terraform apply
+The script runs these controls sequentially, with IAM first:
 
-Options:
+1. Validate the intended AWS account and reject use of the target role as
+   the operator. Install the reserved inline policy `AIAgentEmergencyDenyAll`:
+   an unconditional `Deny` on `Action: "*"`, `Resource: "*"`.
+2. Preserve the existing trust statements and add the reserved statement
+   `AIAgentEmergencyDenyAssumption`, denying `AssumeRole`,
+   `AssumeRoleWithSAML`, and `AssumeRoleWithWebIdentity` for all principals.
+   Read back both policies.
+3. Delete the configured namespace RoleBinding and ServiceAccount, and
+   request deletion of every pod in that namespace using that ServiceAccount,
+   including pods without an `app=ai-agent` label.
+
+**Active AWS sessions:** changing trust alone does not affect previously
+issued credentials. The unconditional role policy denies their authorized
+requests after propagation and also covers sessions issued during the
+trust-policy propagation window. This is permission revocation, not
+destruction of STS credentials; credentials retain their expiration.
+Unlike a timestamp-only `AWSRevokeOlderSessions` policy, this quarantine has
+no issue-time cutoff that could leave later sessions usable. It remains
+until an operator explicitly removes it.
+
+**Guardrails:** the managed Allow and Deny policies, permissions boundary
+(if any), and unrelated inline policies remain untouched. Repeated runs
+replace the same emergency inline policy and maintain one emergency trust
+statement. These two names are reserved for this script. Do not share the
+agent role with other workloads: quarantine affects all its sessions.
+
+**Failure behavior:** failed controls and read-back mismatches produce a
+nonzero exit, preserve visible CLI errors, and do not stop attempts at the
+remaining controls. Partial containment is possible. A zero exit means
+only that requests completed and IAM read-back matched; the script says
+that data-plane containment and pod termination remain unverified.
+Unknown options and conflicting `--iam-only --k8s-only` exit before any calls.
+`--dry-run` makes no AWS or Kubernetes calls.
+
+### Run
+
+From the repository root, use an independent operator with
+`iam:GetRole`, `iam:PutRolePolicy`, `iam:UpdateAssumeRolePolicy`, and
+`iam:GetRolePolicy` on the target role. No policy-detachment permission is
+needed. The Kubernetes operator needs deletion rights on the target
+RoleBinding, ServiceAccount, and pods (and list rights for the pod selector).
+Verification additionally needs read/impersonation rights as noted below.
+
+Choose the account and context explicitly; the script does not choose a
+cluster from the default context. Set overrides when Terraform resource
+names differ from the defaults.
+
 ```bash
-./scripts/kill_switch.sh --dry-run    # preview without changes
-./scripts/kill_switch.sh --iam-only   # revoke AWS access only
-./scripts/kill_switch.sh --k8s-only   # revoke cluster access only
+export AWS_ACCOUNT_ID=630243422167  # replace with the intended account
+export K8S_CONTEXT=YOUR_EKS_CONTEXT
+export AGENT_ROLE_NAME=ai-agent-security-lab-ai-agent-role
+export AGENT_NAMESPACE=ai-agent AGENT_SA=ai-agent-sa
+export AGENT_ROLEBINDING=ai-agent-rolebinding
+
+./scripts/kill_switch.sh --dry-run
+./scripts/kill_switch.sh             # IAM and Kubernetes
+# Alternatively:
+./scripts/kill_switch.sh --iam-only  # Kubernetes skipped
+./scripts/kill_switch.sh --k8s-only   # AWS IAM skipped
 ```
+
+### Reproducible offline verification
+
+Requires Bash, jq, and Python 3. No live credentials or cluster are used.
+The fake CLIs check operation ordering, policy documents, guardrail
+preservation, repeat runs, all control failures, read-back mismatches,
+account/operator checks, dry-run, pod selection, and mode reporting.
+Verifier tests check denial classification and prevention of credential
+refresh/fallback. These tests demonstrate orchestration, not AWS enforcement.
+
+```bash
+bash -n scripts/kill_switch.sh
+python3 -m unittest discover -s tests -v
+```
+
+GitHub Actions runs these independently of Checkov.
+
+### Live AWS verification (disposable lab only)
+
+Run a baseline **before** containment. Use the same saved session afterward;
+do not let an SDK obtain replacement credentials. The read-only probe is
+`ec2:DescribeInstances`, which the repo allows. S3 object reads are unsuitable
+as the sole baseline: the current guardrail denies `kms:Decrypt` while the
+state bucket uses KMS encryption.
+
+Also run the Kubernetes baseline check below before executing the kill switch.
+
+The following uses the operator to obtain a one-hour audience-bound
+ServiceAccount JWT, then exchanges it for a 15-minute agent session.
+Store credential files outside the repo, restrict permissions, and never
+commit or print their contents. An STS exchange is non-destructive but
+creates a real temporary session.
+
+```bash
+umask 077
+PROBE_DIR=$(mktemp -d)
+export AGENT_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${AGENT_ROLE_NAME}"
+export AWS_REGION=us-east-2
+
+kubectl --context "$K8S_CONTEXT" -n "$AGENT_NAMESPACE" create token "$AGENT_SA" \
+  --audience sts.amazonaws.com --duration=1h > "$PROBE_DIR/web-identity.jwt"
+aws sts assume-role-with-web-identity \
+  --region "$AWS_REGION" --role-arn "$AGENT_ROLE_ARN" \
+  --role-session-name before-kill-switch --duration-seconds 900 \
+  --web-identity-token "file://$PROBE_DIR/web-identity.jwt" \
+  --no-sign-request > "$PROBE_DIR/session.json"
+
+python3 scripts/verify_aws_containment.py baseline \
+  --credentials-file "$PROBE_DIR/session.json" \
+  --token-file "$PROBE_DIR/web-identity.jwt" --role-arn "$AGENT_ROLE_ARN" \
+  --region "$AWS_REGION" --evidence-file "$PROBE_DIR/baseline.json"
+# STOP if the baseline exits nonzero; it must show both probes succeeding.
+
+./scripts/kill_switch.sh
+
+python3 scripts/verify_aws_containment.py contained \
+  --credentials-file "$PROBE_DIR/session.json" \
+  --token-file "$PROBE_DIR/web-identity.jwt" --role-arn "$AGENT_ROLE_ARN" \
+  --region "$AWS_REGION" --evidence-file "$PROBE_DIR/baseline.json" \
+  --timeout 180 --interval 5
+```
+
+The verifier checks that captured credentials identify the target role,
+binds the successful baseline to hashes of the same credentials/token, and
+disables profile, web-identity, metadata, and credential-file fallback for
+the old-session probe. It only succeeds when, in one polling iteration,
+the old session receives an authorization denial for the EC2 read and
+the new web-identity assumption receives `AccessDenied`.
+Expired credentials, invalid JWTs, throttling, and network errors do not
+count as containment. Timeout is a failed observation, not permission to
+declare the agent safe. Complete both phases promptly, well before expiry.
+
+`sts:GetCallerIdentity` can succeed even with an explicit deny, so it is
+used only to check identity, never as an access-revocation probe.
+The verifier prints UTC observations and elapsed time from **verifier
+start**, not a global revocation latency. It covers one session, one
+read action, one assumption path, and one region. Test other required
+service actions/regions separately using successful baselines.
+
+### Kubernetes checks
+
+Before containment, record a successful namespace pod-list authorization
+check. After containment, require `no` for the same identity. Impersonation
+requires suitable operator privileges; this tests RBAC, not token validity.
+
+```bash
+kubectl --context "$K8S_CONTEXT" auth can-i list pods \
+  -n "$AGENT_NAMESPACE" \
+  --as "system:serviceaccount:$AGENT_NAMESPACE:$AGENT_SA" \
+  --as-group system:serviceaccounts \
+  --as-group "system:serviceaccounts:$AGENT_NAMESPACE" \
+  --as-group system:authenticated
+# Before: yes. After: no (can-i exits nonzero for no).
+
+kubectl --context "$K8S_CONTEXT" get rolebinding "$AGENT_ROLEBINDING" \
+  -n "$AGENT_NAMESPACE" --ignore-not-found
+kubectl --context "$K8S_CONTEXT" get serviceaccount "$AGENT_SA" \
+  -n "$AGENT_NAMESPACE" --ignore-not-found
+kubectl --context "$K8S_CONTEXT" get pods \
+  --field-selector "spec.serviceAccountName=$AGENT_SA" -n "$AGENT_NAMESPACE"
+# Require successful queries, no binding/account, and no matching pods.
+# A terminating pod still exists; repeat until absent.
+```
+
+For these commands, set `AGENT_ROLEBINDING=ai-agent-rolebinding` unless you
+use an override. Check for unexpected RoleBindings/ClusterRoleBindings and
+controller/reconciler recreation. Deleting this binding does not remove
+other grants to the same identity. Deleting a pod does not guarantee an
+unreachable node has stopped its process, and removing RBAC does not close
+every existing watch/stream. A real-token API probe and node/workload
+inspection are needed if those are part of the containment claim.
+
+### Scope and recovery
+
+This mechanism does not revoke sessions already assumed into **other**
+roles, credentials for other identities, presigned capabilities, completed
+operations, or data already copied. Investigate those separately. A role
+deny is deliberately used instead of merely removing its Allow policy;
+implicit deny may be insufficient with resource-policy grants to a session.
+`GetCallerIdentity` is an explicit exception to a blanket “all access” claim.
+
+Pause Terraform, Kubernetes controllers, and GitOps reconciliation during
+the incident. A Terraform apply may restore the original trust policy;
+reapplying `k8s/rbac.yaml` recreates the deleted identities/binding. The
+emergency inline deny is not managed by this repo's Terraform, but another
+policy manager could remove it. Monitor both emergency controls.
+
+Do **not** treat `terraform apply` as a complete recovery command. Leave
+quarantine in place until investigation is complete. The safest lab restart
+is a new dedicated role/identity while keeping the old role quarantined.
+If recovering the same role, preserve revocation of old sessions: before
+removing the unconditional deny, stage and retain an
+`AWSRevokeOlderSessions` inline deny using `aws:TokenIssueTime` and a reviewed
+UTC cutoff covering every session issued before/during containment.
+AWS's console uses a cutoff approximately 30 seconds into the future;
+that is not a propagation guarantee. Keep trust blocked while staging
+revocation, retain the revocation policy through affected-session expiry,
+and ensure no session can slip past the chosen cutoff during recovery.
+Review the trust policy and original deny guardrails, then reopen only
+under a deliberate recovery plan. Require an old-session denied probe and
+a newly issued session's successful baseline action; re-quarantine on any
+unexpected old-session success. Do not remove both emergency controls
+blindly or automate reopening from a fixed sleep.
+
+AWS references:
+- [Revoke IAM role session permissions](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_revoke-sessions.html)
+- [Disabling permissions for temporary credentials](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp_control-access_disable-perms.html)
+- [IAM eventual consistency](https://docs.aws.amazon.com/IAM/latest/UserGuide/troubleshoot.html#troubleshoot_general_eventual-consistency)
+- [GetCallerIdentity exception](https://docs.aws.amazon.com/STS/latest/APIReference/API_GetCallerIdentity.html)
 
 ---
 
 ## IaC Security Scanning
 
-Checkov runs automatically on every push and pull request via
-GitHub Actions. Scans both Terraform and Kubernetes manifests.
+Terraform and Kubernetes run in **independent jobs** on PRs targeting `main`
+and pushes to `main`. Each job checks out the event's exact head SHA. A
+Terraform failure cannot skip Kubernetes. Findings outside two approved demo
+exceptions, seven guarded scanner classifications and one separately reported
+deployment-input requirement remain hard failures;
+there is no blanket skip list or soft-fail configuration. Full JSON reports
+are uploaded even when a scan fails. The separate offline test workflow
+runs on pushes and PRs without cloud credentials.
 
-Initial scan: 7 findings
-After fixes: resolved KMS key policy (CKV2_AWS_64) and S3 access
-logging (CKV_AWS_18). Remaining findings documented with rationale.
+CI pins Checkov **3.3.24**, Terraform **1.9.8**, and action commit SHAs.
+VPC **5.21.0** is commit-pinned. The reviewed runtime subset of EKS **20.37.2**
+is vendored with its Apache-2.0 license, original file hashes and a single
+recorded patch: KMS **2.1.0** now uses an immutable Git commit source.
+[Vendor provenance and update procedure](vendor/terraform-aws-eks/PROVENANCE.md)
+describe the exact upstream commit and unchanged files. No external fork was
+created. These modules remain compatible with the locked AWS provider
+**5.100.0**. Provider checksums cover Linux AMD64 and macOS ARM64. Checkov downloads external modules and the
+coverage step requires evaluated vendored EKS/managed-node-group files and
+externally downloaded VPC/KMS source files at the expected revisions. Missing
+reports, missing module coverage, and parsing errors fail that step. `--skip-download` disables
+Checkov's platform policy download; `--download-external-modules true`
+still enables Terraform module retrieval.
+
+### Verification evidence and remaining findings
+
+Local verification of the vendored KMS pin and guarded classifications reproduced the results
+below with the pinned tools. Commit-specific remote evidence is available in
+[PR checks and downloadable artifacts](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/pull/1/checks).
+Earlier evidence at `dd557a5` covered the CI/S3 closeout; it did not test the
+later required-input, vendor-integrity or scanner-classification gates.
+
+| Check | Observed result |
+|---|---|
+| Offline orchestration and verifier suite | 20 tests passed; Bash syntax passed |
+| Whitespace and Terraform formatting | Passed |
+| Backend-disabled, credential-free Terraform initialization and validation | Passed |
+| Terraform Checkov, including external modules | 378 passed, **10 failed**, 5 explicitly skipped, 0 parsing errors; 155 resources |
+| Source-CI policy gate | 2 demo exceptions; 7 guarded scanner limitations; **1 deployment-input requirement**; **0 source-CI blockers**; all 10 raw failures unchanged |
+| Demo gate regression tests | 5 tests passed, including malformed/ambiguous reports, changed settings and unrelated findings |
+| Source-CI boundary tests | 4 tests passed: exact failed target retained, every prerequisite guard required, changed/duplicate/passed/skipped targets rejected, unrelated failures still blocking |
+| Required-input tests | 1 provider-free test passed across 12 cases, including omitted input, invalid ranges and synthetic valid inputs |
+| Mocked Terraform evidence | Passed; endpoint/private access, fixture CIDR transfer and 90-day retention checked; existing 9 negative controls passed |
+| Scanner-evidence regression tests | 7 tests passed; 46 reference/default groups guarded, 12 direct source-reference mutations rejected, plus stale/malformed/unknown-evidence and vendor mutations |
+| Module coverage gate | Passed; 8 evaluated module files: 5 vendored EKS and 3 externally downloaded VPC/KMS files |
+| Kubernetes Checkov | 13 passed, 0 failed, 0 skipped, 0 parsing errors; 5 resources |
+
+These results supersede the earlier top-level-only run at `918eaaf`
+(73 passed, 10 failed, Kubernetes skipped). Scan counts describe static
+source checks, including conditional module resources; they are not an
+inventory of deployed resources or proof of live enforcement. See the
+[PR checks and downloadable scan reports](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/pull/1/checks)
+for commit-specific CI evidence.
+
+All 10 raw Terraform failures remain visible. Two have approved conditional
+demo exceptions, seven have evidence-guarded scanner classifications, and
+`CKV_AWS_38` is separately classified as `deployment_input_required` for source
+CI only. It is not a false positive or a passed Checkov check. The nested KMS
+pin check passes. Switching
+EKS to a local source changes which module-version policies are applicable;
+raw pass counts are not a coverage measure (155 resources remain scanned).
+
+| Check(s) / occurrences | Assessment and next decision |
+|---|---|
+| `CKV_AWS_39` / 1 | Approved public-endpoint demo exception on the exact cluster resource, conditional on the required restricted-input contract and private access. See below. |
+| `CKV_AWS_38` / 1 | Raw **FAILED**, classified as `deployment_input_required` for source CI only after all contract/evidence guards pass. No actual operator input is evaluated. Required validated input has no default; synthetic fixtures demonstrate wiring, not approval or deployment readiness. |
+| `CKV_AWS_338` / 1 | Approved exact log-group exception: explicit 90-day retention for the disposable demo. The one-year rule remains visible in the raw report. |
+| `CKV_AWS_58` / 1 | Guarded dynamic-expression limitation: the mocked plan expands secrets encryption and source preserves module-created key selection. The root-supplied key still does not take precedence; no ownership change was made. No live key/encryption claim. |
+| `CKV_TF_1` / now passing | The sole vendor patch replaces the nested KMS registry declaration with Git commit `5508c9cdd6fdb0ed4dcf399f54ba02fb8c31bd4b`. Both Terraform and Checkov downloads must be pristine at that commit. No exception for this check. |
+| `CKV_AWS_111`, `CKV_AWS_356` / 2 | Guarded conditional-evaluation limitation: source creation remains disabled and the mocked plan contains zero IPv6 policy/document instances. Enabling it invalidates classification and requires permission review. |
+| `CKV2_AWS_5` / 2 | Guarded graph-resolution limitations: exact cluster and node/launch-template value-reference chains and their defaults are checked, along with mocked resource instances. Dependency paths alone are insufficient; live attachments remain unverified. |
+| `CKV2_AWS_19` / 1 | Guarded graph-resolution limitation: direct NAT allocation references, NAT/EIP creation settings and mocked instances are checked. Checkov permits NAT attachments but leaves this expression unresolved. Live attachment remains unverified. |
+| `CKV2_AWS_12` / 1 | Guarded dynamic-rule limitation: reviewed source manages the default group with empty rule-loop inputs. Mocked computed ingress/egress remain explicitly unknown, never treated as demonstrated empty rules. Effective live rules remain unverified. |
+
+Actual operator input and separately approved deployment/live verification
+remain outside source CI. A green source-CI gate means the required-input
+contract passed; it does not establish a verified operator allowlist or deployed
+security. No GitHub secret or environment is required for this policy.
+The seven approved classifications apply only to the exact resources and
+reviewed source/evidence below. A passing coverage gate does not waive findings.
+
+### Required operator input and approved demo design
+
+`operator_public_access_cidrs` is a required, nonnullable IPv4 CIDR list with
+**no default**. It rejects an empty list, null elements, malformed ranges,
+IPv6 and `/0`. Omitted input fails a noninteractive Terraform plan; there is
+no open-access fallback. Public and private EKS API access remain enabled.
+The public ranges must be explicitly approved for the actual operator before
+any deployment. Syntax validation does not verify ownership, approval or an
+appropriate range size. Rejecting `/0` alone does not prove least privilege:
+two `/1` ranges can cover all IPv4 addresses. Individual ranges and their combined
+coverage require deployment review, alongside current operator approval.
+No actual operator CIDRs are stored in this PR or supplied to public CI.
+
+Documentation addresses occur only in isolated test fixtures. They must not
+be copied into deployment input. CI supplies no operator variable to Checkov
+and does not substitute test addresses into the scanned Terraform root.
+[AWS documents public CIDR restrictions alongside private endpoint access](https://docs.aws.amazon.com/eks/latest/userguide/cluster-endpoint.html).
+
+CloudWatch control-plane log retention is explicitly **90 days**, as approved
+for this disposable demo. Evidence older than 90 days can expire; teardown
+can remove the log group sooner. This does not satisfy a one-year retention
+requirement. Review retention and durable evidence storage before persistent
+or compliance use. S3 object/version retention is unchanged.
+
+`scripts/check_demo_exceptions.py` accepts only these failed check/resource
+pairs, with the pinned EKS source and root caller:
+
+- `CKV_AWS_39` — `module.eks.aws_eks_cluster.this`: approved laptop-access
+  design, required validated operator input, and private endpoint retained.
+  IAM/RBAC is still required; this is not evidence of live restriction.
+- `CKV_AWS_338` — `module.eks.aws_cloudwatch_log_group.this[0]`: explicit
+  90-day retention with the disposable-demo tradeoff above.
+
+The gate parses root and upstream HCL to verify the required input, exact
+validation expression, endpoint settings/wiring and retention setting/wiring.
+It rejects missing/ambiguous targets, changed settings, overrides, unexpected
+scanner statuses/exits/report shapes, parsing errors and unapproved skips.
+Outside the seven separately guarded scanner classifications and the exact
+deployment-input requirement below, every other failed check remains blocking,
+including the same check on another resource. A module-level skip would propagate into descendants, so none was
+added. The five existing S3 skips remain separately scoped in `iam.tf`.
+The gate does not rewrite raw JSON: artifacts contain both the full findings
+and `checkov-demo-exceptions.json` with demo exceptions, scanner limitations,
+deployment-input requirements and source-CI blocking findings.
+
+### Credential-free relationship evidence
+
+`python3 scripts/verify_iac_evidence.py` runs after initialization in the
+Terraform validation job. `scripts/vendor_integrity.py` checks the complete
+vendor inventory, pinned manifest, every file hash, and the exact reversible
+KMS-source patch. All other copied upstream files are unchanged. Terraform's
+VPC and KMS modules must be independent, pristine Git checkouts at their
+reviewed commits; the installed EKS directory must be the checked vendor copy.
+Missing metadata, changed revisions or unexpected files fail closed.
+
+The Terraform scanner job downloads this same workflow run's mocked-evidence
+artifact using a commit-pinned action. It still runs after validation failure,
+so both scanners execute, but missing evidence prevents classification. The
+evidence commit and root/provider-lock/vendor fingerprint must match the
+scanner checkout; no prior-run artifact or documentation-address substitution
+is accepted. VPC/KMS scanner downloads are independently checked for exact
+Git revision and pristine contents.
+
+The verifier copies the root `.tf` files into a temporary directory and uses
+only `tests/iac/relationships.tftest.hcl` for the full root: all five providers are mocked,
+`command = plan`, and credentials, profiles and `TF_VAR_*` settings are
+removed from the subprocess environment. It executes no apply. The mocked
+IAM policy-document values are placeholders; this is not an IAM policy or
+AWS authorization test. The existing 20 kill-switch/verifier tests remain
+unchanged. A separate provider-free test uses only variable declarations to
+check omitted and invalid inputs.
+
+Assertions require expanded secrets encryption, no instantiated IPv6 CNI
+policy/document, and the expected cluster, node launch template, security
+groups, NAT, EIP and default-group resources. Terraform dependency paths
+supply additional source evidence for the network relationships. Explicitly
+configured default-group rules fail the check. The report records unknown
+computed rules/IDs as unknown: a dependency path can include ordering edges,
+and neither a path nor a mocked plan proves live attachment or enforcement.
+The source guard in `scripts/scanner_evidence.py` additionally checks 46
+reviewed reference/default groups: direct cluster security-group values,
+node-group/launch-template references and selection branches, NAT allocation,
+managed default-group rule loops/defaults, disabled IPv6 creation, and secrets
+encryption/key selection. The reference contract is itself hash-pinned.
+Negative tests change the actual references as well as captured evidence;
+matching dependency endpoints alone cannot satisfy this guard.
+
+Seven exact resource/check pairs are classified only after all these guards
+pass. Missing/duplicate resources, changed revisions/settings, stale evidence,
+malformed reports and ambiguous graph/unknown-value shapes fail closed. Raw
+Checkov results remain intact. Only `CKV_AWS_38` on
+`module.eks.aws_eks_cluster.this`, from the reviewed EKS file and `/main.tf`
+caller, is classified as `deployment_input_required`. It must still have raw
+status `FAILED`; a missing, duplicate, skipped, passed or otherwise changed
+record fails closed. This classification runs only after required-input,
+no-default, validator, endpoint/reference, private-access, vendor integrity,
+external coverage and same-commit mocked-evidence checks pass.
+
+The policy result explicitly reports:
+
+```json
+{
+  "source_ci_contract_verified": true,
+  "actual_operator_input_evaluated": false,
+  "deployment_readiness": "not_verified",
+  "live_enforcement_verified": false
+}
+```
+
+These fields describe source CI only. The test fixture is synthetic and is
+never an approved operator range. Actual operator approval, current network
+ownership, range breadth/combined coverage, deployment inputs and live access
+must be reviewed separately before deployment. No local operator-input mode,
+secret delivery or live attestation is part of this source-CI gate.
+
+Nine negative controls alter only the captured evidence (remove encryption,
+inject an IPv6 policy, remove the launch template/EIP, sever each dependency
+path, or inject a default-group rule). Each must be rejected. CI uploads the
+compact `iac-relationship-evidence` JSON artifact with the checked commit,
+module revisions, dependency paths, unknowns and negative-control outcomes.
+The large mocked provider schemas are temporary and are not published.
+
+### Resource-specific demo exceptions and S3 controls
+
+Both `aws_s3_bucket.agent_state` and `aws_s3_bucket.agent_logs` carry
+in-resource Checkov comments for `CKV_AWS_144` (no cross-region recovery
+target in this disposable, single-region demo) and `CKV2_AWS_62` (no
+object-event consumer). These are four explicit exceptions, not production
+recommendations; reassess them before persistent use.
+
+Only `aws_s3_bucket.agent_logs` skips `CKV_AWS_145`: AWS requires **SSE-S3**
+for S3 server access-log destinations. Explicit `AES256` default encryption
+is configured. The old circular-dependency explanation was unsupported and
+has been removed. Versioning is enabled on both buckets. Each lifecycle
+rule aborts incomplete multipart uploads after seven days, following the
+AWS example; it does **not** expire completed objects or historical versions.
+The existing `force_destroy = true` makes these buckets disposable and must
+be reconsidered before storing durable data.
+
+Log delivery grants only `s3:PutObject` to `logging.s3.amazonaws.com`, only
+under `agent_logs/access-logs/*`, with the source bucket ARN and source
+account required. Logging depends on the destination policy and encryption
+configuration. Delivery is best effort and has not been tested against AWS.
+No recursive logging is configured on the destination bucket.
+
+References:
+- [AWS log-delivery permissions, destination encryption, and destination logging guidance](https://docs.aws.amazon.com/AmazonS3/latest/userguide/enable-server-access-logging.html)
+- [AWS incomplete-multipart lifecycle example](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpu-abort-incomplete-mpu-lifecycle-config.html)
+- [Checkov resource-level suppression syntax](https://www.checkov.io/2.Basics/Suppressing%20and%20Skipping%20Policies.html)
+
+Reproduce without AWS credentials (module/provider downloads require internet):
+
+```bash
+bash -n scripts/kill_switch.sh
+python3 -m unittest discover -s tests -v
+git diff --check
+terraform fmt -check -recursive terraform
+terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
+terraform -chdir=terraform validate
+terraform fmt -check -recursive tests/iac
+python3 scripts/verify_iac_evidence.py
+python3 -m pip install checkov==3.3.24
+python3 -m unittest discover -s tests/iac -v
+set +e
+checkov -d terraform --framework terraform --download-external-modules true \
+  --external-modules-download-path .external_modules --skip-download \
+  --compact -o cli -o json --output-file-path console,checkov-terraform.json
+terraform_scan_exit=$?
+set -e
+# Keep the raw failure visible; evaluate only the approved source-CI policy.
+python3 scripts/check_demo_exceptions.py checkov-terraform.json "$terraform_scan_exit" \
+  --evidence iac-evidence.json
+python3 scripts/check_scan_coverage.py terraform checkov-terraform.json
+checkov -d k8s --framework kubernetes --skip-download \
+  --compact -o cli -o json --output-file-path console,checkov-kubernetes.json
+python3 scripts/check_scan_coverage.py kubernetes checkov-kubernetes.json
+```
+
+All evidence above is offline orchestration or static analysis. Live AWS/EKS
+containment, network-policy enforcement, S3 log delivery, and agent KMS/S3
+functionality remain unverified. The agent's explicit `kms:Decrypt` deny
+still conflicts with reading its KMS-encrypted bucket; the live-verification
+section intentionally uses an EC2 read baseline. No universal or
+under-ten-second revocation claim is supported.
 
 ---
 
@@ -160,14 +620,22 @@ logging (CKV_AWS_18). Remaining findings documented with rationale.
 
 | Tool | Version | Install |
 |------|---------|---------|
+| jq | 1.6+ | https://jqlang.org |
+| Python | 3.10+ (verification) | https://www.python.org |
 | AWS CLI | v2+ | https://aws.amazon.com/cli |
-| Terraform | >= 1.5.0 | https://developer.hashicorp.com/terraform/install |
+| Terraform | 1.9.8 tested (>= 1.5.0 required) | https://developer.hashicorp.com/terraform/install |
 | kubectl | any | https://kubernetes.io/docs/tasks/tools |
-| Checkov | latest | `pip3 install checkov` |
+| Checkov | 3.3.24 | `pip3 install checkov==3.3.24` |
 
 ---
 
 ## Deploy
+
+Before an approved deployment, supply the actual reviewed
+`operator_public_access_cidrs` through your Terraform input mechanism.
+No value is provided here. Without it, `terraform plan -input=false` fails.
+Do not use the mocked documentation addresses. The deployment-input requirement
+and live-verification limits above remain unresolved even when source CI passes.
 
 ```bash
 # Configure AWS credentials
@@ -176,7 +644,7 @@ aws configure
 # Initialize and deploy infrastructure
 cd terraform
 terraform init
-terraform plan -out=tfplan
+terraform plan -input=false -out=tfplan
 terraform apply tfplan
 
 # Connect kubectl to the cluster

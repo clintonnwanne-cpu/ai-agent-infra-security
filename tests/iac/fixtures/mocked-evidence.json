@@ -1,0 +1,187 @@
+{
+  "planned_resources": [
+    "aws_iam_policy.agent_allow",
+    "aws_iam_policy.agent_deny",
+    "aws_iam_role.ai_agent",
+    "aws_iam_role_policy_attachment.agent_allow",
+    "aws_iam_role_policy_attachment.agent_deny",
+    "aws_kms_alias.eks",
+    "aws_kms_key.eks",
+    "aws_s3_bucket.agent_logs",
+    "aws_s3_bucket.agent_state",
+    "aws_s3_bucket_lifecycle_configuration.agent_logs",
+    "aws_s3_bucket_lifecycle_configuration.agent_state",
+    "aws_s3_bucket_logging.agent_state",
+    "aws_s3_bucket_policy.agent_logs",
+    "aws_s3_bucket_public_access_block.agent_logs",
+    "aws_s3_bucket_public_access_block.agent_state",
+    "aws_s3_bucket_server_side_encryption_configuration.agent_logs",
+    "aws_s3_bucket_server_side_encryption_configuration.agent_state",
+    "aws_s3_bucket_versioning.agent_logs",
+    "aws_s3_bucket_versioning.agent_state",
+    "data.aws_iam_policy_document.agent_allow",
+    "data.aws_iam_policy_document.agent_deny",
+    "data.aws_iam_policy_document.agent_log_delivery",
+    "data.aws_iam_policy_document.agent_trust",
+    "module.eks.aws_cloudwatch_log_group.this[0]",
+    "module.eks.aws_ec2_tag.cluster_primary_security_group[\"Environment\"]",
+    "module.eks.aws_ec2_tag.cluster_primary_security_group[\"ManagedBy\"]",
+    "module.eks.aws_ec2_tag.cluster_primary_security_group[\"Owner\"]",
+    "module.eks.aws_ec2_tag.cluster_primary_security_group[\"Project\"]",
+    "module.eks.aws_eks_cluster.this[0]",
+    "module.eks.aws_iam_openid_connect_provider.oidc_provider[0]",
+    "module.eks.aws_iam_policy.cluster_encryption[0]",
+    "module.eks.aws_iam_policy.custom[0]",
+    "module.eks.aws_iam_role.this[0]",
+    "module.eks.aws_iam_role_policy_attachment.cluster_encryption[0]",
+    "module.eks.aws_iam_role_policy_attachment.custom[0]",
+    "module.eks.aws_iam_role_policy_attachment.this[\"AmazonEKSClusterPolicy\"]",
+    "module.eks.aws_iam_role_policy_attachment.this[\"AmazonEKSVPCResourceController\"]",
+    "module.eks.aws_security_group.cluster[0]",
+    "module.eks.aws_security_group.node[0]",
+    "module.eks.aws_security_group_rule.cluster[\"ingress_nodes_443\"]",
+    "module.eks.aws_security_group_rule.node[\"egress_all\"]",
+    "module.eks.aws_security_group_rule.node[\"ingress_cluster_443\"]",
+    "module.eks.aws_security_group_rule.node[\"ingress_cluster_4443_webhook\"]",
+    "module.eks.aws_security_group_rule.node[\"ingress_cluster_6443_webhook\"]",
+    "module.eks.aws_security_group_rule.node[\"ingress_cluster_8443_webhook\"]",
+    "module.eks.aws_security_group_rule.node[\"ingress_cluster_9443_webhook\"]",
+    "module.eks.aws_security_group_rule.node[\"ingress_cluster_kubelet\"]",
+    "module.eks.aws_security_group_rule.node[\"ingress_nodes_ephemeral\"]",
+    "module.eks.aws_security_group_rule.node[\"ingress_self_coredns_tcp\"]",
+    "module.eks.aws_security_group_rule.node[\"ingress_self_coredns_udp\"]",
+    "module.eks.data.tls_certificate.this[0]",
+    "module.eks.module.eks_managed_node_group[\"agent_nodes\"].aws_eks_node_group.this[0]",
+    "module.eks.module.eks_managed_node_group[\"agent_nodes\"].aws_iam_role.this[0]",
+    "module.eks.module.eks_managed_node_group[\"agent_nodes\"].aws_iam_role_policy_attachment.this[\"AmazonEC2ContainerRegistryReadOnly\"]",
+    "module.eks.module.eks_managed_node_group[\"agent_nodes\"].aws_iam_role_policy_attachment.this[\"AmazonEKSWorkerNodePolicy\"]",
+    "module.eks.module.eks_managed_node_group[\"agent_nodes\"].aws_iam_role_policy_attachment.this[\"AmazonEKS_CNI_Policy\"]",
+    "module.eks.module.eks_managed_node_group[\"agent_nodes\"].aws_launch_template.this[0]",
+    "module.eks.module.eks_managed_node_group[\"agent_nodes\"].module.user_data.null_resource.validate_cluster_service_cidr",
+    "module.eks.module.kms.aws_kms_alias.this[\"cluster\"]",
+    "module.eks.module.kms.aws_kms_key.this[0]",
+    "module.eks.module.kms.data.aws_iam_policy_document.this[0]",
+    "module.eks.time_sleep.this[0]",
+    "module.vpc.aws_default_network_acl.this[0]",
+    "module.vpc.aws_default_route_table.default[0]",
+    "module.vpc.aws_default_security_group.this[0]",
+    "module.vpc.aws_eip.nat[0]",
+    "module.vpc.aws_internet_gateway.this[0]",
+    "module.vpc.aws_nat_gateway.this[0]",
+    "module.vpc.aws_route.private_nat_gateway[0]",
+    "module.vpc.aws_route.public_internet_gateway[0]",
+    "module.vpc.aws_route_table.private[0]",
+    "module.vpc.aws_route_table.public[0]",
+    "module.vpc.aws_route_table_association.private[0]",
+    "module.vpc.aws_route_table_association.private[1]",
+    "module.vpc.aws_route_table_association.public[0]",
+    "module.vpc.aws_route_table_association.public[1]",
+    "module.vpc.aws_subnet.private[0]",
+    "module.vpc.aws_subnet.private[1]",
+    "module.vpc.aws_subnet.public[0]",
+    "module.vpc.aws_subnet.public[1]",
+    "module.vpc.aws_vpc.this[0]"
+  ],
+  "secrets_encryption_resources": [
+    "secrets"
+  ],
+  "ipv6_cni_instances": 0,
+  "dependency_paths": {
+    "cluster security group dependency": [
+      [
+        "module.eks.aws_eks_cluster.this (expand)",
+        "module.eks.aws_security_group_rule.cluster (expand)",
+        "module.eks.aws_security_group.cluster (expand)"
+      ]
+    ],
+    "node launch-template security group dependency": [
+      [
+        "module.eks.module.eks_managed_node_group.aws_launch_template.this (expand)",
+        "module.eks.module.eks_managed_node_group.local.security_group_ids (expand)"
+      ],
+      [
+        "module.eks.module.eks_managed_node_group.local.security_group_ids (expand)",
+        "module.eks.module.eks_managed_node_group.var.vpc_security_group_ids (expand)"
+      ],
+      [
+        "module.eks.module.eks_managed_node_group.var.vpc_security_group_ids (expand)",
+        "module.eks.local.node_security_group_id (expand)"
+      ],
+      [
+        "module.eks.local.node_security_group_id (expand)",
+        "module.eks.aws_security_group.node (expand)"
+      ]
+    ],
+    "NAT allocation dependency": [
+      [
+        "module.vpc.aws_nat_gateway.this (expand)",
+        "module.vpc.local.nat_gateway_ips (expand)"
+      ],
+      [
+        "module.vpc.local.nat_gateway_ips (expand)",
+        "module.vpc.aws_eip.nat (expand)"
+      ]
+    ],
+    "default security group VPC dependency": [
+      [
+        "module.vpc.aws_default_security_group.this (expand)",
+        "module.vpc.aws_vpc.this (expand)"
+      ]
+    ]
+  },
+  "default_security_group": {
+    "configured_ingress": null,
+    "configured_egress": null,
+    "ingress_unknown": true,
+    "egress_unknown": true
+  },
+  "limits": "Mocked plan and dependency evidence; unknown IDs/rules and live enforcement are not verified.",
+  "evidence_version": 2,
+  "source_fingerprint": "synthetic-test-fingerprint",
+  "terraform_version": "1.9.8",
+  "installed_modules": {
+    "eks": {
+      "sha": "8a0efdbbc84180a26e0bacfd2b6fcfceac53b3b6",
+      "source": "../vendor/terraform-aws-eks",
+      "clean": true,
+      "manifest_sha256": "a738fa79390c42966edf96fda8bc0e7d4b120fdb65aa7bb6db6d34f85d0f0fbf",
+      "kms_source_commit": "5508c9cdd6fdb0ed4dcf399f54ba02fb8c31bd4b"
+    },
+    "vpc": {
+      "sha": "7c1f791efd61f326ed6102d564d1a65d1eceedf0",
+      "source": "git::https://github.com/terraform-aws-modules/terraform-aws-vpc.git?ref=7c1f791efd61f326ed6102d564d1a65d1eceedf0",
+      "clean": true
+    },
+    "eks.kms": {
+      "sha": "5508c9cdd6fdb0ed4dcf399f54ba02fb8c31bd4b",
+      "source": "git::https://github.com/terraform-aws-modules/terraform-aws-kms.git?ref=5508c9cdd6fdb0ed4dcf399f54ba02fb8c31bd4b",
+      "clean": true
+    }
+  },
+  "mocked_plan": {
+    "status": "pass",
+    "passed": 1,
+    "failed": 0,
+    "errored": 0,
+    "skipped": 0
+  },
+  "demo_contract": {
+    "endpoint_public_access": true,
+    "endpoint_private_access": true,
+    "cidrs_match_mock_fixture": true,
+    "retention_days": 90,
+    "operator_cidrs_verified": false
+  },
+  "negative_controls_rejected": [
+    "missing encryption",
+    "enabled IPv6 policy",
+    "missing launch template",
+    "missing EIP",
+    "broken cluster security group dependency",
+    "broken node launch-template security group dependency",
+    "broken NAT allocation dependency",
+    "broken default security group VPC dependency",
+    "configured default-group ingress"
+  ],
+  "commit": "synthetic-test-commit"
+}

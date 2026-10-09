@@ -3,7 +3,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "5.100.0"
     }
   }
 }
@@ -13,8 +13,8 @@ provider "aws" {
 }
 
 module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 5.0"
+  # terraform-aws-modules/vpc/aws v5.21.0
+  source = "git::https://github.com/terraform-aws-modules/terraform-aws-vpc.git?ref=7c1f791efd61f326ed6102d564d1a65d1eceedf0"
 
   name = "${var.cluster_name}-vpc"
   cidr = var.vpc_cidr
@@ -42,8 +42,9 @@ module "vpc" {
 }
 
 module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.0"
+  # Reviewed EKS v20.37.2 runtime; only nested KMS source is patched.
+  # License, upstream hashes and patch: vendor/terraform-aws-eks/PROVENANCE.md
+  source = "../vendor/terraform-aws-eks"
 
   cluster_name    = var.cluster_name
   cluster_version = var.kubernetes_version
@@ -51,8 +52,10 @@ module "eks" {
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
-  cluster_endpoint_public_access  = true
-  cluster_endpoint_private_access = true
+  cluster_endpoint_public_access         = true
+  cluster_endpoint_private_access        = true
+  cluster_endpoint_public_access_cidrs   = var.operator_public_access_cidrs
+  cloudwatch_log_group_retention_in_days = 90
 
   cluster_encryption_config = {
     provider_key_arn = aws_kms_key.eks.arn

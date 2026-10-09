@@ -6,28 +6,128 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+env:
+  AWS_EC2_METADATA_DISABLED: "true"
+
 jobs:
-  checkov:
-    name: Checkov — Terraform Security Scan
+  terraform-validation:
+    name: Terraform format and validation
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run Checkov on Terraform
-        uses: bridgecrewio/checkov-action@master
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          directory: terraform/
-          framework: terraform
-          soft_fail: false
-          output_format: cli
-          download_external_modules: false
-
-      - name: Run Checkov on Kubernetes manifests
-        uses: bridgecrewio/checkov-action@master
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
-          directory: k8s/
-          framework: kubernetes
-          soft_fail: false
-          output_format: cli
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+      - run: |
+          git diff --check
+          terraform fmt -check -recursive terraform
+          terraform fmt -check -recursive tests/iac
+          terraform fmt -check -recursive vendor
+          python3 scripts/vendor_integrity.py
+          terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=terraform validate -no-color
+      - name: Reject omitted or invalid operator CIDR input without providers
+        run: python3 -m unittest discover -s tests/iac -p 'test_required_input.py' -v
+      - name: Verify mocked-plan relationships and installed KMS revision
+        run: python3 scripts/verify_iac_evidence.py
+      - name: Preserve credential-free relationship evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: iac-relationship-evidence
+          path: iac-evidence.json
+          if-no-files-found: error
+
+  terraform:
+    name: Checkov — Terraform with external modules
+    needs: terraform-validation
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install checkov==3.3.24
+      - name: Test exact demo exception gate and required-input contract
+        run: |
+          python -m unittest discover -s tests/iac -p 'test_demo_exceptions.py' -v
+          python -m unittest discover -s tests/iac -p 'test_source_ci.py' -v
+      - name: Scan Terraform including downloaded modules
+        id: scan
+        if: always()
+        run: |
+          set +e
+          checkov -d terraform --framework terraform \
+            --download-external-modules true \
+            --external-modules-download-path .external_modules \
+            --skip-download --compact -o cli -o json \
+            --output-file-path console,checkov-terraform.json
+          scanner_exit=$?
+          set -e
+          echo "exit_code=$scanner_exit" >> "$GITHUB_OUTPUT"
+      - name: Test scanner evidence and vendor integrity guards
+        run: python -m unittest discover -s tests/iac -p 'test_scanner_evidence.py' -v
+      - name: Read same-run mocked evidence
+        if: always()
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: iac-relationship-evidence
+          path: evidence
+      - name: Enforce source-CI policy and report deployment requirements
+        if: always()
+        env:
+          SCANNER_EXIT: ${{ steps.scan.outputs.exit_code }}
+        run: >-
+          python scripts/check_demo_exceptions.py checkov-terraform.json "$SCANNER_EXIT"
+          --evidence evidence/iac-evidence.json
+      - name: Require external-module coverage and no parsing errors
+        if: always()
+        run: python scripts/check_scan_coverage.py terraform checkov-terraform.json
+      - name: Preserve full Terraform findings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: checkov-terraform
+          path: |
+            checkov-terraform.json
+            checkov-demo-exceptions.json
+          if-no-files-found: error
+
+  kubernetes:
+    name: Checkov — Kubernetes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install checkov==3.3.24
+      - name: Scan Kubernetes manifests
+        run: >-
+          checkov -d k8s --framework kubernetes --skip-download
+          --compact -o cli -o json
+          --output-file-path console,checkov-kubernetes.json
+      - name: Require manifest coverage and no parsing errors
+        if: always()
+        run: python scripts/check_scan_coverage.py kubernetes checkov-kubernetes.json
+      - name: Preserve full Kubernetes findings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: checkov-kubernetes
+          path: checkov-kubernetes.json
+          if-no-files-found: error
