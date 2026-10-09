@@ -1,0 +1,14 @@
+--- a/main.tf
++++ b/main.tf
+@@ -300,8 +300,9 @@
+ ################################################################################
+ 
+ module "kms" {
+-  source  = "terraform-aws-modules/kms/aws"
+-  version = "2.1.0" # Note - be mindful of Terraform/provider version compatibility between modules
++  # Local modification: pin the same KMS 2.1.0 release to its immutable commit.
++  # See PROVENANCE.md; no key-selection or resource behavior changes.
++  source = "git::https://github.com/terraform-aws-modules/terraform-aws-kms.git?ref=5508c9cdd6fdb0ed4dcf399f54ba02fb8c31bd4b"
+ 
+   create = local.create && var.create_kms_key && local.enable_cluster_encryption_config # not valid on Outposts
+ 

@@ -1,0 +1,675 @@
+{
+  "eks.cluster": {
+    "dynamic": [
+      {
+        "compute_config": {
+          "content": [
+            {
+              "enabled": [
+                "${local.auto_mode_enabled}"
+              ],
+              "node_pools": [
+                "${local.auto_mode_enabled ? try(compute_config.value.node_pools,[]) : None}"
+              ],
+              "node_role_arn": [
+                "${local.auto_mode_enabled && length(try(compute_config.value.node_pools,[])) > 0 ? try(compute_config.value.node_role_arn,aws_iam_role.eks_auto[0].arn,None) : None}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${length(var.cluster_compute_config) > 0 ? ['${var.cluster_compute_config}'] : []}"
+          ]
+        }
+      },
+      {
+        "kubernetes_network_config": {
+          "content": [
+            {
+              "dynamic": [
+                {
+                  "elastic_load_balancing": {
+                    "content": [
+                      {
+                        "enabled": [
+                          "${local.auto_mode_enabled}"
+                        ]
+                      }
+                    ],
+                    "for_each": [
+                      "${local.auto_mode_enabled ? [1] : []}"
+                    ]
+                  }
+                }
+              ],
+              "ip_family": [
+                "${var.cluster_ip_family}"
+              ],
+              "service_ipv4_cidr": [
+                "${var.cluster_service_ipv4_cidr}"
+              ],
+              "service_ipv6_cidr": [
+                "${var.cluster_service_ipv6_cidr}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${local.create_outposts_local_cluster ? [] : [1]}"
+          ]
+        }
+      },
+      {
+        "outpost_config": {
+          "content": [
+            {
+              "control_plane_instance_type": [
+                "${outpost_config.value.control_plane_instance_type}"
+              ],
+              "outpost_arns": [
+                "${outpost_config.value.outpost_arns}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${local.create_outposts_local_cluster ? ['${var.outpost_config}'] : []}"
+          ]
+        }
+      },
+      {
+        "encryption_config": {
+          "content": [
+            {
+              "provider": [
+                {
+                  "key_arn": [
+                    "${var.create_kms_key ? module.kms.key_arn : encryption_config.value.provider_key_arn}"
+                  ]
+                }
+              ],
+              "resources": [
+                "${encryption_config.value.resources}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${local.enable_cluster_encryption_config ? ['${var.cluster_encryption_config}'] : []}"
+          ]
+        }
+      },
+      {
+        "remote_network_config": {
+          "content": [
+            {
+              "dynamic": [
+                {
+                  "remote_node_networks": {
+                    "content": [
+                      {
+                        "cidrs": [
+                          "${remote_node_networks.value.cidrs}"
+                        ]
+                      }
+                    ],
+                    "for_each": [
+                      [
+                        "${remote_network_config.value.remote_node_networks}"
+                      ]
+                    ]
+                  }
+                },
+                {
+                  "remote_pod_networks": {
+                    "content": [
+                      {
+                        "cidrs": [
+                          "${remote_pod_networks.value.cidrs}"
+                        ]
+                      }
+                    ],
+                    "for_each": [
+                      "${try(['${remote_network_config.value.remote_pod_networks}'],[])}"
+                    ]
+                  }
+                }
+              ]
+            }
+          ],
+          "for_each": [
+            "${length(var.cluster_remote_network_config) > 0 && !local.create_outposts_local_cluster ? ['${var.cluster_remote_network_config}'] : []}"
+          ]
+        }
+      },
+      {
+        "storage_config": {
+          "content": [
+            {
+              "block_storage": [
+                {
+                  "enabled": [
+                    "${local.auto_mode_enabled}"
+                  ]
+                }
+              ]
+            }
+          ],
+          "for_each": [
+            "${local.auto_mode_enabled ? [1] : []}"
+          ]
+        }
+      },
+      {
+        "upgrade_policy": {
+          "content": [
+            {
+              "support_type": [
+                "${try(upgrade_policy.value.support_type,None)}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${length(var.cluster_upgrade_policy) > 0 ? ['${var.cluster_upgrade_policy}'] : []}"
+          ]
+        }
+      },
+      {
+        "zonal_shift_config": {
+          "content": [
+            {
+              "enabled": [
+                "${try(zonal_shift_config.value.enabled,None)}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${length(var.cluster_zonal_shift_config) > 0 ? ['${var.cluster_zonal_shift_config}'] : []}"
+          ]
+        }
+      }
+    ],
+    "vpc_config": [
+      {
+        "endpoint_private_access": [
+          "${var.cluster_endpoint_private_access}"
+        ],
+        "endpoint_public_access": [
+          "${var.cluster_endpoint_public_access}"
+        ],
+        "public_access_cidrs": [
+          "${var.cluster_endpoint_public_access_cidrs}"
+        ],
+        "security_group_ids": [
+          "${compact(distinct(concat(var.cluster_additional_security_group_ids,['${local.cluster_security_group_id}'])))}"
+        ],
+        "subnet_ids": [
+          "${coalescelist(var.control_plane_subnet_ids,var.subnet_ids)}"
+        ]
+      }
+    ]
+  },
+  "eks.default.cluster_additional_security_group_ids": [
+    []
+  ],
+  "eks.default.cluster_ip_family": [
+    "ipv4"
+  ],
+  "eks.default.create": [
+    true
+  ],
+  "eks.default.create_cluster_security_group": [
+    true
+  ],
+  "eks.default.create_cni_ipv6_iam_policy": [
+    false
+  ],
+  "eks.default.create_kms_key": [
+    true
+  ],
+  "eks.default.create_node_security_group": [
+    true
+  ],
+  "eks.default.eks_managed_node_group_defaults": [
+    {}
+  ],
+  "eks.default.putin_khuylo": [
+    true
+  ],
+  "eks.ipv6_document": {
+    "count": [
+      "${var.create && var.create_cni_ipv6_iam_policy ? 1 : 0}"
+    ]
+  },
+  "eks.ipv6_policy": {
+    "count": [
+      "${var.create && var.create_cni_ipv6_iam_policy ? 1 : 0}"
+    ],
+    "policy": [
+      "${data.aws_iam_policy_document.cni_ipv6_policy[0].json}"
+    ]
+  },
+  "eks.kms": {
+    "create": [
+      "${local.create && var.create_kms_key && local.enable_cluster_encryption_config}"
+    ],
+    "source": [
+      "git::https://github.com/terraform-aws-modules/terraform-aws-kms.git?ref=5508c9cdd6fdb0ed4dcf399f54ba02fb8c31bd4b"
+    ]
+  },
+  "eks.local.cluster_security_group_id": [
+    "${local.create_cluster_sg ? aws_security_group.cluster[0].id : var.cluster_security_group_id}"
+  ],
+  "eks.local.create": [
+    "${var.create && var.putin_khuylo}"
+  ],
+  "eks.local.create_cluster_sg": [
+    "${local.create && var.create_cluster_security_group}"
+  ],
+  "eks.local.create_node_sg": [
+    "${var.create && var.create_node_security_group}"
+  ],
+  "eks.local.enable_cluster_encryption_config": [
+    "${length(var.cluster_encryption_config) > 0 && !local.create_outposts_local_cluster}"
+  ],
+  "eks.local.node_security_group_id": [
+    "${local.create_node_sg ? aws_security_group.node[0].id : var.node_security_group_id}"
+  ],
+  "eks.managed_node_input": {
+    "create_launch_template": [
+      "${try(each.value.create_launch_template,var.eks_managed_node_group_defaults.create_launch_template,True)}"
+    ],
+    "enable_efa_support": [
+      "${try(each.value.enable_efa_support,var.eks_managed_node_group_defaults.enable_efa_support,False)}"
+    ],
+    "launch_template_id": [
+      "${try(each.value.launch_template_id,var.eks_managed_node_group_defaults.launch_template_id,\"\")}"
+    ],
+    "network_interfaces": [
+      "${try(each.value.network_interfaces,var.eks_managed_node_group_defaults.network_interfaces,[])}"
+    ],
+    "source": [
+      "./modules/eks-managed-node-group"
+    ],
+    "use_custom_launch_template": [
+      "${try(each.value.use_custom_launch_template,var.eks_managed_node_group_defaults.use_custom_launch_template,True)}"
+    ],
+    "vpc_security_group_ids": [
+      "${compact(concat(['${local.node_security_group_id}'],try(each.value.vpc_security_group_ids,var.eks_managed_node_group_defaults.vpc_security_group_ids,[])))}"
+    ]
+  },
+  "node.default.create": [
+    true
+  ],
+  "node.default.create_launch_template": [
+    true
+  ],
+  "node.default.enable_efa_support": [
+    false
+  ],
+  "node.default.network_interfaces": [
+    []
+  ],
+  "node.default.use_custom_launch_template": [
+    true
+  ],
+  "node.group": {
+    "dynamic": [
+      {
+        "launch_template": {
+          "content": [
+            {
+              "id": [
+                "${local.launch_template_id}"
+              ],
+              "version": [
+                "${local.launch_template_version}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${var.use_custom_launch_template ? [1] : []}"
+          ]
+        }
+      },
+      {
+        "remote_access": {
+          "content": [
+            {
+              "ec2_ssh_key": [
+                "${try(remote_access.value.ec2_ssh_key,None)}"
+              ],
+              "source_security_group_ids": [
+                "${try(remote_access.value.source_security_group_ids,[])}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${length(var.remote_access) > 0 ? ['${var.remote_access}'] : []}"
+          ]
+        }
+      },
+      {
+        "taint": {
+          "content": [
+            {
+              "effect": [
+                "${taint.value.effect}"
+              ],
+              "key": [
+                "${taint.value.key}"
+              ],
+              "value": [
+                "${try(taint.value.value,None)}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${var.taints}"
+          ]
+        }
+      },
+      {
+        "update_config": {
+          "content": [
+            {
+              "max_unavailable": [
+                "${try(update_config.value.max_unavailable,None)}"
+              ],
+              "max_unavailable_percentage": [
+                "${try(update_config.value.max_unavailable_percentage,None)}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${length(var.update_config) > 0 ? ['${var.update_config}'] : []}"
+          ]
+        }
+      },
+      {
+        "node_repair_config": {
+          "content": [
+            {
+              "enabled": [
+                "${node_repair_config.value.enabled}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${var.node_repair_config != None ? ['${var.node_repair_config}'] : []}"
+          ]
+        }
+      }
+    ]
+  },
+  "node.launch_template": {
+    "count": [
+      "${var.create && var.create_launch_template && var.use_custom_launch_template ? 1 : 0}"
+    ],
+    "vpc_security_group_ids": [
+      "${length(local.network_interfaces) > 0 ? [] : local.security_group_ids}"
+    ]
+  },
+  "node.local.enable_efa_support": [
+    "${var.create && var.enable_efa_support}"
+  ],
+  "node.local.launch_template_id": [
+    "${var.create && var.create_launch_template ? try(aws_launch_template.this[0].id,None) : var.launch_template_id}"
+  ],
+  "node.local.network_interfaces": [
+    "${local.enable_efa_support ? local.efa_network_interfaces : var.network_interfaces}"
+  ],
+  "node.local.security_group_ids": [
+    "${compact(concat(['${var.cluster_primary_security_group_id}'],var.vpc_security_group_ids))}"
+  ],
+  "root.eks": {
+    "cloudwatch_log_group_retention_in_days": [
+      90
+    ],
+    "cluster_enabled_log_types": [
+      [
+        "api",
+        "audit",
+        "authenticator",
+        "controllerManager",
+        "scheduler"
+      ]
+    ],
+    "cluster_encryption_config": [
+      {
+        "provider_key_arn": "${aws_kms_key.eks.arn}",
+        "resources": [
+          "secrets"
+        ]
+      }
+    ],
+    "cluster_endpoint_private_access": [
+      true
+    ],
+    "cluster_endpoint_public_access": [
+      true
+    ],
+    "cluster_endpoint_public_access_cidrs": [
+      "${var.operator_public_access_cidrs}"
+    ],
+    "cluster_name": [
+      "${var.cluster_name}"
+    ],
+    "cluster_version": [
+      "${var.kubernetes_version}"
+    ],
+    "eks_managed_node_groups": [
+      {
+        "agent_nodes": {
+          "desired_size": 1,
+          "instance_types": [
+            "t3.small"
+          ],
+          "labels": {
+            "role": "agent-workload"
+          },
+          "max_size": 2,
+          "min_size": 1,
+          "subnet_ids": "${module.vpc.private_subnets}",
+          "tags": "${local.common_tags}"
+        }
+      }
+    ],
+    "source": [
+      "../vendor/terraform-aws-eks"
+    ],
+    "subnet_ids": [
+      "${module.vpc.private_subnets}"
+    ],
+    "tags": [
+      "${local.common_tags}"
+    ],
+    "vpc_id": [
+      "${module.vpc.vpc_id}"
+    ]
+  },
+  "root.terraform": {
+    "required_providers": [
+      {
+        "aws": [
+          {
+            "source": "hashicorp/aws",
+            "version": "5.100.0"
+          }
+        ]
+      }
+    ],
+    "required_version": [
+      ">= 1.5.0"
+    ]
+  },
+  "root.vpc": {
+    "azs": [
+      "${var.availability_zones}"
+    ],
+    "cidr": [
+      "${var.vpc_cidr}"
+    ],
+    "enable_dns_hostnames": [
+      true
+    ],
+    "enable_dns_support": [
+      true
+    ],
+    "enable_nat_gateway": [
+      true
+    ],
+    "name": [
+      "${var.cluster_name}-vpc"
+    ],
+    "private_subnet_tags": [
+      {
+        "kubernetes.io/cluster/${var.cluster_name}": "shared",
+        "kubernetes.io/role/internal-elb": "1"
+      }
+    ],
+    "private_subnets": [
+      "${var.private_subnet_cidrs}"
+    ],
+    "public_subnet_tags": [
+      {
+        "kubernetes.io/cluster/${var.cluster_name}": "shared",
+        "kubernetes.io/role/elb": "1"
+      }
+    ],
+    "public_subnets": [
+      "${var.public_subnet_cidrs}"
+    ],
+    "single_nat_gateway": [
+      true
+    ],
+    "source": [
+      "git::https://github.com/terraform-aws-modules/terraform-aws-vpc.git?ref=7c1f791efd61f326ed6102d564d1a65d1eceedf0"
+    ],
+    "tags": [
+      "${local.common_tags}"
+    ]
+  },
+  "vpc.default.create_vpc": [
+    true
+  ],
+  "vpc.default.default_security_group_egress": [
+    []
+  ],
+  "vpc.default.default_security_group_ingress": [
+    []
+  ],
+  "vpc.default.manage_default_security_group": [
+    true
+  ],
+  "vpc.default.putin_khuylo": [
+    true
+  ],
+  "vpc.default.reuse_nat_ips": [
+    false
+  ],
+  "vpc.default_group": {
+    "count": [
+      "${local.create_vpc && var.manage_default_security_group ? 1 : 0}"
+    ],
+    "dynamic": [
+      {
+        "ingress": {
+          "content": [
+            {
+              "cidr_blocks": [
+                "${compact(split(\",\",lookup(ingress.value,\"cidr_blocks\",\"\")))}"
+              ],
+              "description": [
+                "${lookup(ingress.value,\"description\",None)}"
+              ],
+              "from_port": [
+                "${lookup(ingress.value,\"from_port\",0)}"
+              ],
+              "ipv6_cidr_blocks": [
+                "${compact(split(\",\",lookup(ingress.value,\"ipv6_cidr_blocks\",\"\")))}"
+              ],
+              "prefix_list_ids": [
+                "${compact(split(\",\",lookup(ingress.value,\"prefix_list_ids\",\"\")))}"
+              ],
+              "protocol": [
+                "${lookup(ingress.value,\"protocol\",\"-1\")}"
+              ],
+              "security_groups": [
+                "${compact(split(\",\",lookup(ingress.value,\"security_groups\",\"\")))}"
+              ],
+              "self": [
+                "${lookup(ingress.value,\"self\",None)}"
+              ],
+              "to_port": [
+                "${lookup(ingress.value,\"to_port\",0)}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${var.default_security_group_ingress}"
+          ]
+        }
+      },
+      {
+        "egress": {
+          "content": [
+            {
+              "cidr_blocks": [
+                "${compact(split(\",\",lookup(egress.value,\"cidr_blocks\",\"\")))}"
+              ],
+              "description": [
+                "${lookup(egress.value,\"description\",None)}"
+              ],
+              "from_port": [
+                "${lookup(egress.value,\"from_port\",0)}"
+              ],
+              "ipv6_cidr_blocks": [
+                "${compact(split(\",\",lookup(egress.value,\"ipv6_cidr_blocks\",\"\")))}"
+              ],
+              "prefix_list_ids": [
+                "${compact(split(\",\",lookup(egress.value,\"prefix_list_ids\",\"\")))}"
+              ],
+              "protocol": [
+                "${lookup(egress.value,\"protocol\",\"-1\")}"
+              ],
+              "security_groups": [
+                "${compact(split(\",\",lookup(egress.value,\"security_groups\",\"\")))}"
+              ],
+              "self": [
+                "${lookup(egress.value,\"self\",None)}"
+              ],
+              "to_port": [
+                "${lookup(egress.value,\"to_port\",0)}"
+              ]
+            }
+          ],
+          "for_each": [
+            "${var.default_security_group_egress}"
+          ]
+        }
+      }
+    ],
+    "vpc_id": [
+      "${aws_vpc.this[0].id}"
+    ]
+  },
+  "vpc.eip": {
+    "count": [
+      "${local.create_vpc && var.enable_nat_gateway && !var.reuse_nat_ips ? local.nat_gateway_count : 0}"
+    ]
+  },
+  "vpc.local.create_vpc": [
+    "${var.create_vpc && var.putin_khuylo}"
+  ],
+  "vpc.local.nat_gateway_count": [
+    "${var.single_nat_gateway ? 1 : var.one_nat_gateway_per_az ? length(var.azs) : local.max_subnet_length}"
+  ],
+  "vpc.local.nat_gateway_ips": [
+    "${var.reuse_nat_ips ? var.external_nat_ip_ids : aws_eip.nat[*].id}"
+  ],
+  "vpc.nat": {
+    "allocation_id": [
+      "${element(local.nat_gateway_ips,var.single_nat_gateway ? 0 : count.index)}"
+    ],
+    "count": [
+      "${local.create_vpc && var.enable_nat_gateway ? local.nat_gateway_count : 0}"
+    ]
+  }
+}

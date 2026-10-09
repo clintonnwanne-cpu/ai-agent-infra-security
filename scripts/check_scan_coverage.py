@@ -18,16 +18,16 @@ def verify(framework, report):
     if framework == "terraform":
         expected = (
             "terraform-aws-vpc/7c1f791efd61f326ed6102d564d1a65d1eceedf0/main.tf",
-            "terraform-aws-eks/8a0efdbbc84180a26e0bacfd2b6fcfceac53b3b6/main.tf",
-            "terraform-aws-eks/8a0efdbbc84180a26e0bacfd2b6fcfceac53b3b6/modules/eks-managed-node-group/main.tf",
+            "vendor/terraform-aws-eks/main.tf",
+            "vendor/terraform-aws-eks/modules/eks-managed-node-group/main.tf",
             "terraform-aws-kms/5508c9cdd6fdb0ed4dcf399f54ba02fb8c31bd4b/main.tf",
         )
         paths = {check["file_path"] for check in evaluated
-                 if ".external_modules/" in check["file_path"]}
+                 if ".external_modules/" in check["file_path"] or "/vendor/" in check["file_path"]}
         for suffix in expected:
             if not any(path.endswith(suffix) for path in paths):
-                raise ValueError(f"Missing external-module coverage: {suffix}")
-        print(f"External-module coverage verified: {len(paths)} source files")
+                raise ValueError(f"Missing module coverage: {suffix}")
+        print(f"Vendored/external-module coverage verified: {len(paths)} source files")
     elif framework == "kubernetes":
         if summary["resource_count"] != 5:
             raise ValueError("Expected the five resources in k8s/rbac.yaml; review coverage")

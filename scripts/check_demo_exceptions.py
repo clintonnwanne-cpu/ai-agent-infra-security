@@ -10,10 +10,11 @@ from pathlib import Path
 import sys
 
 from check_scan_coverage import verify as verify_coverage
+from scanner_evidence import EKS_FILE, CLASSIFICATIONS, verify_evidence
 
 EKS_PIN = "8a0efdbbc84180a26e0bacfd2b6fcfceac53b3b6"
-SOURCE = "git::https://github.com/terraform-aws-modules/terraform-aws-eks.git?ref=" + EKS_PIN
-FILE = "/.external_modules/github.com/terraform-aws-modules/terraform-aws-eks/" + EKS_PIN + "/main.tf"
+SOURCE = "../vendor/terraform-aws-eks"
+FILE = EKS_FILE
 EXCEPTIONS = {
     ("CKV_AWS_39", "module.eks.aws_eks_cluster.this"):
         "Approved demo public API design: required approved IPv4 CIDRs, private endpoint retained; actual operator input still pending.",
@@ -118,10 +119,36 @@ def assess(report, scanner_exit):
             "limits": "Required-input source contract only; mocked tests and source scanning do not verify deployable CIDRs or live enforcement."}
 
 
+def classify_limitations(result, report):
+    """Called only after same-commit source and mocked evidence verification."""
+    accepted = []
+    for pair, (path, reason) in CLASSIFICATIONS.items():
+        matches = [r for r in report["results"]["failed_checks"]
+                   if (r["check_id"], r["resource"]) == pair]
+        record = one(matches, "scanner-limitation target " + str(pair))
+        caller = None if pair[0].startswith("CKV2_") else "/main.tf"
+        require(record["file_path"] == path and "caller_file_path" in record
+                and record["caller_file_path"] == caller,
+                "Changed classification source/caller")
+        accepted.append({"check_id": pair[0], "resource": pair[1], "reason": reason})
+    kms = one([r for r in report["results"]["passed_checks"]
+               if r["check_id"] == "CKV_TF_1" and r["resource"] == "module.eks.kms"], "passing immutable KMS check")
+    require(kms["file_path"] == FILE, "Changed KMS check source")
+    # No approved operator input exists. Never silently close this item based
+    # on a source scanner accepting an unresolved variable or mock fixture.
+    one([r for r in report["results"]["failed_checks"] if r["check_id"] == "CKV_AWS_38"
+         and r["resource"] == "module.eks.aws_eks_cluster.this"], "unresolved operator CIDR finding")
+    result["classified_scanner_limitations"] = accepted
+    result["blocking_findings"] = [r for r in result["blocking_findings"]
+                                    if (r["check_id"], r["resource"]) not in CLASSIFICATIONS]
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path)
     parser.add_argument("scanner_exit", type=int)
+    parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--root", type=Path, default=Path("terraform"))
     parser.add_argument("--output", type=Path, default=Path("checkov-demo-exceptions.json"))
     args = parser.parse_args()
@@ -129,8 +156,12 @@ def main():
     result = assess(report, args.scanner_exit)
     verify_coverage("terraform", report)
     verify_contract(args.root)
+    verified = verify_evidence(args.root.resolve().parent, json.loads(args.evidence.read_text()))
+    result = classify_limitations(result, report)
+    result["evidence"] = verified
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(f"Accepted exactly {len(result['accepted_demo_exceptions'])} demo exceptions; "
+          f"{len(result['classified_scanner_limitations'])} guarded scanner limitations; "
           f"{len(result['blocking_findings'])} other findings remain blocking")
     return int(bool(result["blocking_findings"]))
 

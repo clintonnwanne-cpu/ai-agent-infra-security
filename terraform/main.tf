@@ -42,8 +42,9 @@ module "vpc" {
 }
 
 module "eks" {
-  # terraform-aws-modules/eks/aws v20.37.2 (compatible with AWS provider 5.100.0)
-  source = "git::https://github.com/terraform-aws-modules/terraform-aws-eks.git?ref=8a0efdbbc84180a26e0bacfd2b6fcfceac53b3b6"
+  # Reviewed EKS v20.37.2 runtime; only nested KMS source is patched.
+  # License, upstream hashes and patch: vendor/terraform-aws-eks/PROVENANCE.md
+  source = "../vendor/terraform-aws-eks"
 
   cluster_name    = var.cluster_name
   cluster_version = var.kubernetes_version

@@ -29,6 +29,8 @@ jobs:
           git diff --check
           terraform fmt -check -recursive terraform
           terraform fmt -check -recursive tests/iac
+          terraform fmt -check -recursive vendor
+          python3 scripts/vendor_integrity.py
           terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
           terraform -chdir=terraform validate -no-color
       - name: Reject omitted or invalid operator CIDR input without providers
@@ -45,6 +47,8 @@ jobs:
 
   terraform:
     name: Checkov — Terraform with external modules
+    needs: terraform-validation
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -58,6 +62,8 @@ jobs:
       - name: Test exact demo exception gate and required-input contract
         run: python -m unittest discover -s tests/iac -p 'test_demo_exceptions.py' -v
       - name: Scan Terraform including downloaded modules
+        id: scan
+        if: always()
         run: |
           set +e
           checkov -d terraform --framework terraform \
@@ -67,7 +73,22 @@ jobs:
             --output-file-path console,checkov-terraform.json
           scanner_exit=$?
           set -e
-          python scripts/check_demo_exceptions.py checkov-terraform.json "$scanner_exit"
+          echo "exit_code=$scanner_exit" >> "$GITHUB_OUTPUT"
+      - name: Test scanner evidence and vendor integrity guards
+        run: python -m unittest discover -s tests/iac -p 'test_scanner_evidence.py' -v
+      - name: Read same-run mocked evidence
+        if: always()
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: iac-relationship-evidence
+          path: evidence
+      - name: Enforce exact demo and scanner classifications
+        if: always()
+        env:
+          SCANNER_EXIT: ${{ steps.scan.outputs.exit_code }}
+        run: >-
+          python scripts/check_demo_exceptions.py checkov-terraform.json "$SCANNER_EXIT"
+          --evidence evidence/iac-evidence.json
       - name: Require external-module coverage and no parsing errors
         if: always()
         run: python scripts/check_scan_coverage.py terraform checkov-terraform.json

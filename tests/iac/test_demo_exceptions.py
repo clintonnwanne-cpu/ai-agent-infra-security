@@ -76,7 +76,8 @@ class DemoGateTests(unittest.TestCase):
 
     def test_source_contract_and_negative_mutations(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory) / "terraform"
+            root.mkdir()
             for source in (REPO / "terraform").glob("*.tf"):
                 shutil.copyfile(source, root / source.name)
             upstream = root / gate.FILE.lstrip("/")

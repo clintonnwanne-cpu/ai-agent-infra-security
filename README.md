@@ -351,41 +351,46 @@ AWS references:
 
 Terraform and Kubernetes run in **independent jobs** on PRs targeting `main`
 and pushes to `main`. Each job checks out the event's exact head SHA. A
-Terraform failure cannot skip Kubernetes. Findings outside the two exact approved demo exceptions remain hard failures;
+Terraform failure cannot skip Kubernetes. Findings outside two approved demo
+exceptions and seven guarded scanner classifications remain hard failures;
 there is no blanket skip list or soft-fail configuration. Full JSON reports
 are uploaded even when a scan fails. The separate offline test workflow
 runs on pushes and PRs without cloud credentials.
 
 CI pins Checkov **3.3.24**, Terraform **1.9.8**, and action commit SHAs.
-The root modules are pinned to the commits for VPC **5.21.0** and EKS
-**20.37.2**, compatible with the locked AWS provider **5.100.0**. The EKS
-module selects KMS **2.1.0** internally. Provider checksums are recorded for
-Linux AMD64 and macOS ARM64. Checkov downloads external modules and the
-coverage step requires evaluated VPC, EKS, managed-node-group, and KMS
-source files at the expected revisions. Missing reports, missing module
-coverage, and parsing errors fail that step. `--skip-download` disables
+VPC **5.21.0** is commit-pinned. The reviewed runtime subset of EKS **20.37.2**
+is vendored with its Apache-2.0 license, original file hashes and a single
+recorded patch: KMS **2.1.0** now uses an immutable Git commit source.
+[Vendor provenance and update procedure](vendor/terraform-aws-eks/PROVENANCE.md)
+describe the exact upstream commit and unchanged files. No external fork was
+created. These modules remain compatible with the locked AWS provider
+**5.100.0**. Provider checksums cover Linux AMD64 and macOS ARM64. Checkov downloads external modules and the
+coverage step requires evaluated vendored EKS/managed-node-group files and
+externally downloaded VPC/KMS source files at the expected revisions. Missing
+reports, missing module coverage, and parsing errors fail that step. `--skip-download` disables
 Checkov's platform policy download; `--download-external-modules true`
 still enables Terraform module retrieval.
 
 ### Verification evidence and remaining findings
 
-Local verification of the required-input/90-day design reproduced the results
+Local verification of the vendored KMS pin and guarded classifications reproduced the results
 below with the pinned tools. Commit-specific remote evidence is available in
 [PR checks and downloadable artifacts](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/pull/1/checks).
 Earlier evidence at `dd557a5` covered the CI/S3 closeout; it did not test the
-new required operator input or exact exception gate.
+later required-input, vendor-integrity or scanner-classification gates.
 
 | Check | Observed result |
 |---|---|
 | Offline orchestration and verifier suite | 20 tests passed; Bash syntax passed |
 | Whitespace and Terraform formatting | Passed |
 | Backend-disabled, credential-free Terraform initialization and validation | Passed |
-| Terraform Checkov, including external modules | 379 passed, **11 failed**, 5 explicitly skipped, 0 parsing errors; 155 resources |
-| Exact demo exception gate | 2 accepted; **9 other findings remain blocking**; raw findings unchanged |
+| Terraform Checkov, including external modules | 378 passed, **10 failed**, 5 explicitly skipped, 0 parsing errors; 155 resources |
+| Exact classification gate | 2 demo exceptions; 7 guarded scanner limitations; **1 finding remains blocking**; raw findings unchanged |
 | New gate regression tests | 5 tests passed, including malformed/ambiguous reports, changed settings and unrelated findings |
 | Required-input tests | 1 provider-free test passed across 12 cases, including omitted input, invalid ranges and synthetic valid inputs |
 | Mocked Terraform evidence | Passed; endpoint/private access, fixture CIDR transfer and 90-day retention checked; existing 9 negative controls passed |
-| External-module coverage gate | Passed; 8 evaluated external source files |
+| Scanner-evidence regression tests | 7 tests passed; 46 reference/default groups guarded, 12 direct source-reference mutations rejected, plus stale/malformed/unknown-evidence and vendor mutations |
+| Module coverage gate | Passed; 8 evaluated module files: 5 vendored EKS and 3 externally downloaded VPC/KMS files |
 | Kubernetes Checkov | 13 passed, 0 failed, 0 skipped, 0 parsing errors; 5 resources |
 
 These results supersede the earlier top-level-only run at `918eaaf`
@@ -395,25 +400,29 @@ inventory of deployed resources or proof of live enforcement. See the
 [PR checks and downloadable scan reports](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/pull/1/checks)
 for commit-specific CI evidence.
 
-All 11 raw Terraform findings remain visible. Exactly two have approved
-conditional demo exceptions; the other nine remain blocking:
+All 10 raw Terraform failures remain visible. Two have approved conditional
+demo exceptions, seven have evidence-guarded scanner classifications, and
+`CKV_AWS_38` remains blocking. The nested KMS pin check now passes. Switching
+EKS to a local source changes which module-version policies are applicable;
+raw pass counts are not a coverage measure (155 resources remain scanned).
 
 | Check(s) / occurrences | Assessment and next decision |
 |---|---|
 | `CKV_AWS_39` / 1 | Approved public-endpoint demo exception on the exact cluster resource, conditional on the required restricted-input contract and private access. See below. |
 | `CKV_AWS_38` / 1 | Still blocking: no operator CIDRs have been supplied. The root now requires validated input with no default; Checkov still flags the unresolved module CIDRs. Mocked documentation addresses do not establish deployable settings. |
 | `CKV_AWS_338` / 1 | Approved exact log-group exception: explicit 90-day retention for the disposable demo. The one-year rule remains visible in the raw report. |
-| `CKV_AWS_58` / 1 | Requires further verification: the root requests secrets encryption, but the scanner flags the module's dynamic encryption block. The credential-free mocked plan expands `resources = ["secrets"]`. The module defaults to creating its own KMS key; do not assume the root-supplied key is selected. Inspect an approved plan and live configuration before claiming the intended key is used. |
-| `CKV_TF_1` / 1 | The upstream EKS module references KMS by registry version `2.1.0`, not commit hash. Both the Checkov coverage gate and the Terraform-installed module check verify the retrieved KMS revision, but neither changes that upstream source declaration. |
-| `CKV_AWS_111`, `CKV_AWS_356` / 2 | The upstream IPv6 CNI policy document contains wildcard write resources. Its creation is disabled by default (`create_cni_ipv6_iam_policy = false`); the mocked plan contains no policy/document instances, although source scanning still reports it. Review permissions before enabling IPv6. |
-| `CKV2_AWS_5` / 2 | Source links cluster/node security groups through locals and node-group inputs. The scanner does not resolve those attachments here. Confirm attachment in an approved plan; these are not accepted security exceptions. |
-| `CKV2_AWS_19` / 1 | The VPC EIP is wired to a NAT gateway through `local.nat_gateway_ips`. Checkov 3.3.24 explicitly accepts NAT attachments despite the rule's EC2-focused title; it leaves this allocation expression unresolved. CI checks the planned NAT/EIP instances and dependency path, not live attachment. |
-| `CKV2_AWS_12` / 1 | The VPC module defaults to managing the default security group with empty ingress/egress rules. The graph check still flags the VPC. Confirm the effective rules in an approved plan. |
+| `CKV_AWS_58` / 1 | Guarded dynamic-expression limitation: the mocked plan expands secrets encryption and source preserves module-created key selection. The root-supplied key still does not take precedence; no ownership change was made. No live key/encryption claim. |
+| `CKV_TF_1` / now passing | The sole vendor patch replaces the nested KMS registry declaration with Git commit `5508c9cdd6fdb0ed4dcf399f54ba02fb8c31bd4b`. Both Terraform and Checkov downloads must be pristine at that commit. No exception for this check. |
+| `CKV_AWS_111`, `CKV_AWS_356` / 2 | Guarded conditional-evaluation limitation: source creation remains disabled and the mocked plan contains zero IPv6 policy/document instances. Enabling it invalidates classification and requires permission review. |
+| `CKV2_AWS_5` / 2 | Guarded graph-resolution limitations: exact cluster and node/launch-template value-reference chains and their defaults are checked, along with mocked resource instances. Dependency paths alone are insufficient; live attachments remain unverified. |
+| `CKV2_AWS_19` / 1 | Guarded graph-resolution limitation: direct NAT allocation references, NAT/EIP creation settings and mocked instances are checked. Checkov permits NAT attachments but leaves this expression unresolved. Live attachment remains unverified. |
+| `CKV2_AWS_12` / 1 | Guarded dynamic-rule limitation: reviewed source manages the default group with empty rule-loop inputs. Mocked computed ingress/egress remain explicitly unknown, never treated as demonstrated empty rules. Effective live rules remain unverified. |
 
-Actual operator CIDRs, upstream module changes, and plan/live verification
-remain follow-up work. CI remains red for nine non-exempt findings. No graph,
-conditional-policy, encryption or transitive-module-pin exception was added.
-A passing coverage gate does not waive findings.
+Actual operator CIDRs and separately approved plan/live verification remain
+follow-up work. CI remains red for `CKV_AWS_38`; an unresolved variable is
+neither proof of unrestricted deployed access nor a verified operator allowlist.
+The seven approved classifications apply only to the exact resources and
+reviewed source/evidence below. A passing coverage gate does not waive findings.
 
 ### Required operator input and approved demo design
 
@@ -450,8 +459,8 @@ The gate parses root and upstream HCL to verify the required input, exact
 validation expression, endpoint settings/wiring and retention setting/wiring.
 It rejects missing/ambiguous targets, changed settings, overrides, unexpected
 scanner statuses/exits/report shapes, parsing errors and unapproved skips.
-Any other failed check remains blocking, including the same check on another
-resource. A module-level skip would propagate into descendants, so none was
+Outside the seven separately guarded scanner classifications below, every
+other failed check remains blocking, including the same check on another resource. A module-level skip would propagate into descendants, so none was
 added. The five existing S3 skips remain separately scoped in `iam.tf`.
 The gate does not rewrite raw JSON: artifacts contain both the full findings
 and `checkov-demo-exceptions.json` with accepted pairs and blocking findings.
@@ -459,13 +468,20 @@ and `checkov-demo-exceptions.json` with accepted pairs and blocking findings.
 ### Credential-free relationship evidence
 
 `python3 scripts/verify_iac_evidence.py` runs after initialization in the
-Terraform validation job. It verifies that the installed EKS, VPC and KMS
-modules are independent, pristine Git checkouts at the reviewed commits.
-In particular, Terraform's own KMS checkout must be
-`5508c9cdd6fdb0ed4dcf399f54ba02fb8c31bd4b`; this supplements the scanner's
-separate download check. Missing Git metadata, a changed revision, or local
-module changes fail closed. It does not make the upstream version-tag
-reference immutable or waive `CKV_TF_1`.
+Terraform validation job. `scripts/vendor_integrity.py` checks the complete
+vendor inventory, pinned manifest, every file hash, and the exact reversible
+KMS-source patch. All other copied upstream files are unchanged. Terraform's
+VPC and KMS modules must be independent, pristine Git checkouts at their
+reviewed commits; the installed EKS directory must be the checked vendor copy.
+Missing metadata, changed revisions or unexpected files fail closed.
+
+The Terraform scanner job downloads this same workflow run's mocked-evidence
+artifact using a commit-pinned action. It still runs after validation failure,
+so both scanners execute, but missing evidence prevents classification. The
+evidence commit and root/provider-lock/vendor fingerprint must match the
+scanner checkout; no prior-run artifact or documentation-address substitution
+is accepted. VPC/KMS scanner downloads are independently checked for exact
+Git revision and pristine contents.
 
 The verifier copies the root `.tf` files into a temporary directory and uses
 only `tests/iac/relationships.tftest.hcl` for the full root: all five providers are mocked,
@@ -483,8 +499,20 @@ supply additional source evidence for the network relationships. Explicitly
 configured default-group rules fail the check. The report records unknown
 computed rules/IDs as unknown: a dependency path can include ordering edges,
 and neither a path nor a mocked plan proves live attachment or enforcement.
-These checks rely on the reviewed, immutable EKS/VPC source and do not assert
-that Checkov must keep producing a particular failure count.
+The source guard in `scripts/scanner_evidence.py` additionally checks 46
+reviewed reference/default groups: direct cluster security-group values,
+node-group/launch-template references and selection branches, NAT allocation,
+managed default-group rule loops/defaults, disabled IPv6 creation, and secrets
+encryption/key selection. The reference contract is itself hash-pinned.
+Negative tests change the actual references as well as captured evidence;
+matching dependency endpoints alone cannot satisfy this guard.
+
+Seven exact resource/check pairs are classified only after all these guards
+pass. Missing/duplicate resources, changed revisions/settings, stale evidence,
+malformed reports and ambiguous graph/unknown-value shapes fail closed. Raw
+Checkov results remain intact. `CKV_AWS_38` must remain blocking until actual
+approved operator input is handled; even a scanner pass on an unresolved
+variable cannot silently close it.
 
 Nine negative controls alter only the captured evidence (remove encryption,
 inject an IPv6 policy, remove the launch template/EIP, sever each dependency

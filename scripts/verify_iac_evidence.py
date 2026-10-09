@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import tempfile
 
+from vendor_integrity import verify_vendor, source_fingerprint
+
 PINS = {
     "eks": "8a0efdbbc84180a26e0bacfd2b6fcfceac53b3b6",
     "vpc": "7c1f791efd61f326ed6102d564d1a65d1eceedf0",
@@ -62,6 +64,12 @@ def installed_modules(root, env):
     modules = {m["Key"]: m for m in manifest["Modules"]}
     evidence = {}
     for name, expected in PINS.items():
+        if name == "eks":
+            directory = (root / modules[name]["Dir"]).resolve()
+            require(directory == (root.parent / "vendor/terraform-aws-eks").resolve()
+                    and modules[name]["Source"] == "../vendor/terraform-aws-eks", "Unexpected vendored EKS location")
+            evidence[name] = verify_vendor(directory)
+            continue
         directory = (root / modules[name]["Dir"]).resolve()
         git = ["git", "-C", str(directory)]
         # Do not accidentally verify the containing project when .git is absent.
@@ -111,6 +119,7 @@ def verify_relationships(changes, edges):
     require(not default["after"].get("ingress") and not default["after"].get("egress"),
             "Default security group contains explicitly configured rules")
     return {
+        "planned_resources": sorted(resources),
         "secrets_encryption_resources": after["encryption_config"][0]["resources"],
         "ipv6_cni_instances": 0,
         "dependency_paths": paths,
@@ -179,7 +188,9 @@ def main():
             and not re.search(r'^\s*provider\s+"', fixture_text, re.M),
             "Fixture must contain only the five mock providers and one plan command")
     with tempfile.TemporaryDirectory(prefix="iac-evidence-") as temporary:
-        isolated = Path(temporary)
+        isolated = Path(temporary) / "terraform"
+        isolated.mkdir()
+        (Path(temporary) / "vendor").symlink_to(repo / "vendor", target_is_directory=True)
         # Never execute a user's existing tests/state/backend. This repository
         # has no backend; do not add one to this disposable test copy.
         for source in root.glob("*.tf"):
@@ -215,7 +226,8 @@ def main():
         dot = command([binary, "graph", "-type=plan"], isolated, env)
         edges, changes = graph_edges(dot), plans[0]
         result = verify_relationships(changes, edges)
-        result.update({"terraform_version": version, "installed_modules": modules,
+        result.update({"evidence_version": 2, "source_fingerprint": source_fingerprint(repo),
+                       "terraform_version": version, "installed_modules": modules,
                        "mocked_plan": summary,
                        "demo_contract": {"endpoint_public_access": True, "endpoint_private_access": True,
                                          "cidrs_match_mock_fixture": True, "retention_days": 90,
