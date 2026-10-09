@@ -352,7 +352,8 @@ AWS references:
 Terraform and Kubernetes run in **independent jobs** on PRs targeting `main`
 and pushes to `main`. Each job checks out the event's exact head SHA. A
 Terraform failure cannot skip Kubernetes. Findings outside two approved demo
-exceptions and seven guarded scanner classifications remain hard failures;
+exceptions, seven guarded scanner classifications and one separately reported
+deployment-input requirement remain hard failures;
 there is no blanket skip list or soft-fail configuration. Full JSON reports
 are uploaded even when a scan fails. The separate offline test workflow
 runs on pushes and PRs without cloud credentials.
@@ -385,8 +386,9 @@ later required-input, vendor-integrity or scanner-classification gates.
 | Whitespace and Terraform formatting | Passed |
 | Backend-disabled, credential-free Terraform initialization and validation | Passed |
 | Terraform Checkov, including external modules | 378 passed, **10 failed**, 5 explicitly skipped, 0 parsing errors; 155 resources |
-| Exact classification gate | 2 demo exceptions; 7 guarded scanner limitations; **1 finding remains blocking**; raw findings unchanged |
-| New gate regression tests | 5 tests passed, including malformed/ambiguous reports, changed settings and unrelated findings |
+| Source-CI policy gate | 2 demo exceptions; 7 guarded scanner limitations; **1 deployment-input requirement**; **0 source-CI blockers**; all 10 raw failures unchanged |
+| Demo gate regression tests | 5 tests passed, including malformed/ambiguous reports, changed settings and unrelated findings |
+| Source-CI boundary tests | 4 tests passed: exact failed target retained, every prerequisite guard required, changed/duplicate/passed/skipped targets rejected, unrelated failures still blocking |
 | Required-input tests | 1 provider-free test passed across 12 cases, including omitted input, invalid ranges and synthetic valid inputs |
 | Mocked Terraform evidence | Passed; endpoint/private access, fixture CIDR transfer and 90-day retention checked; existing 9 negative controls passed |
 | Scanner-evidence regression tests | 7 tests passed; 46 reference/default groups guarded, 12 direct source-reference mutations rejected, plus stale/malformed/unknown-evidence and vendor mutations |
@@ -402,14 +404,16 @@ for commit-specific CI evidence.
 
 All 10 raw Terraform failures remain visible. Two have approved conditional
 demo exceptions, seven have evidence-guarded scanner classifications, and
-`CKV_AWS_38` remains blocking. The nested KMS pin check now passes. Switching
+`CKV_AWS_38` is separately classified as `deployment_input_required` for source
+CI only. It is not a false positive or a passed Checkov check. The nested KMS
+pin check passes. Switching
 EKS to a local source changes which module-version policies are applicable;
 raw pass counts are not a coverage measure (155 resources remain scanned).
 
 | Check(s) / occurrences | Assessment and next decision |
 |---|---|
 | `CKV_AWS_39` / 1 | Approved public-endpoint demo exception on the exact cluster resource, conditional on the required restricted-input contract and private access. See below. |
-| `CKV_AWS_38` / 1 | Still blocking: no operator CIDRs have been supplied. The root now requires validated input with no default; Checkov still flags the unresolved module CIDRs. Mocked documentation addresses do not establish deployable settings. |
+| `CKV_AWS_38` / 1 | Raw **FAILED**, classified as `deployment_input_required` for source CI only after all contract/evidence guards pass. No actual operator input is evaluated. Required validated input has no default; synthetic fixtures demonstrate wiring, not approval or deployment readiness. |
 | `CKV_AWS_338` / 1 | Approved exact log-group exception: explicit 90-day retention for the disposable demo. The one-year rule remains visible in the raw report. |
 | `CKV_AWS_58` / 1 | Guarded dynamic-expression limitation: the mocked plan expands secrets encryption and source preserves module-created key selection. The root-supplied key still does not take precedence; no ownership change was made. No live key/encryption claim. |
 | `CKV_TF_1` / now passing | The sole vendor patch replaces the nested KMS registry declaration with Git commit `5508c9cdd6fdb0ed4dcf399f54ba02fb8c31bd4b`. Both Terraform and Checkov downloads must be pristine at that commit. No exception for this check. |
@@ -418,9 +422,10 @@ raw pass counts are not a coverage measure (155 resources remain scanned).
 | `CKV2_AWS_19` / 1 | Guarded graph-resolution limitation: direct NAT allocation references, NAT/EIP creation settings and mocked instances are checked. Checkov permits NAT attachments but leaves this expression unresolved. Live attachment remains unverified. |
 | `CKV2_AWS_12` / 1 | Guarded dynamic-rule limitation: reviewed source manages the default group with empty rule-loop inputs. Mocked computed ingress/egress remain explicitly unknown, never treated as demonstrated empty rules. Effective live rules remain unverified. |
 
-Actual operator CIDRs and separately approved plan/live verification remain
-follow-up work. CI remains red for `CKV_AWS_38`; an unresolved variable is
-neither proof of unrestricted deployed access nor a verified operator allowlist.
+Actual operator input and separately approved deployment/live verification
+remain outside source CI. A green source-CI gate means the required-input
+contract passed; it does not establish a verified operator allowlist or deployed
+security. No GitHub secret or environment is required for this policy.
 The seven approved classifications apply only to the exact resources and
 reviewed source/evidence below. A passing coverage gate does not waive findings.
 
@@ -432,8 +437,10 @@ IPv6 and `/0`. Omitted input fails a noninteractive Terraform plan; there is
 no open-access fallback. Public and private EKS API access remain enabled.
 The public ranges must be explicitly approved for the actual operator before
 any deployment. Syntax validation does not verify ownership, approval or an
-appropriate range size; broad or combined ranges still require human review.
-No actual operator CIDRs have been supplied or verified in this PR.
+appropriate range size. Rejecting `/0` alone does not prove least privilege:
+two `/1` ranges can cover all IPv4 addresses. Individual ranges and their combined
+coverage require deployment review, alongside current operator approval.
+No actual operator CIDRs are stored in this PR or supplied to public CI.
 
 Documentation addresses occur only in isolated test fixtures. They must not
 be copied into deployment input. CI supplies no operator variable to Checkov
@@ -459,11 +466,13 @@ The gate parses root and upstream HCL to verify the required input, exact
 validation expression, endpoint settings/wiring and retention setting/wiring.
 It rejects missing/ambiguous targets, changed settings, overrides, unexpected
 scanner statuses/exits/report shapes, parsing errors and unapproved skips.
-Outside the seven separately guarded scanner classifications below, every
-other failed check remains blocking, including the same check on another resource. A module-level skip would propagate into descendants, so none was
+Outside the seven separately guarded scanner classifications and the exact
+deployment-input requirement below, every other failed check remains blocking,
+including the same check on another resource. A module-level skip would propagate into descendants, so none was
 added. The five existing S3 skips remain separately scoped in `iam.tf`.
 The gate does not rewrite raw JSON: artifacts contain both the full findings
-and `checkov-demo-exceptions.json` with accepted pairs and blocking findings.
+and `checkov-demo-exceptions.json` with demo exceptions, scanner limitations,
+deployment-input requirements and source-CI blocking findings.
 
 ### Credential-free relationship evidence
 
@@ -510,9 +519,30 @@ matching dependency endpoints alone cannot satisfy this guard.
 Seven exact resource/check pairs are classified only after all these guards
 pass. Missing/duplicate resources, changed revisions/settings, stale evidence,
 malformed reports and ambiguous graph/unknown-value shapes fail closed. Raw
-Checkov results remain intact. `CKV_AWS_38` must remain blocking until actual
-approved operator input is handled; even a scanner pass on an unresolved
-variable cannot silently close it.
+Checkov results remain intact. Only `CKV_AWS_38` on
+`module.eks.aws_eks_cluster.this`, from the reviewed EKS file and `/main.tf`
+caller, is classified as `deployment_input_required`. It must still have raw
+status `FAILED`; a missing, duplicate, skipped, passed or otherwise changed
+record fails closed. This classification runs only after required-input,
+no-default, validator, endpoint/reference, private-access, vendor integrity,
+external coverage and same-commit mocked-evidence checks pass.
+
+The policy result explicitly reports:
+
+```json
+{
+  "source_ci_contract_verified": true,
+  "actual_operator_input_evaluated": false,
+  "deployment_readiness": "not_verified",
+  "live_enforcement_verified": false
+}
+```
+
+These fields describe source CI only. The test fixture is synthetic and is
+never an approved operator range. Actual operator approval, current network
+ownership, range breadth/combined coverage, deployment inputs and live access
+must be reviewed separately before deployment. No local operator-input mode,
+secret delivery or live attestation is part of this source-CI gate.
 
 Nine negative controls alter only the captured evidence (remove encryption,
 inject an IPv6 policy, remove the launch template/EIP, sever each dependency
@@ -561,10 +591,16 @@ terraform -chdir=terraform validate
 terraform fmt -check -recursive tests/iac
 python3 scripts/verify_iac_evidence.py
 python3 -m pip install checkov==3.3.24
+python3 -m unittest discover -s tests/iac -v
+set +e
 checkov -d terraform --framework terraform --download-external-modules true \
   --external-modules-download-path .external_modules --skip-download \
   --compact -o cli -o json --output-file-path console,checkov-terraform.json
-# Run the next commands even when Terraform findings return a nonzero exit.
+terraform_scan_exit=$?
+set -e
+# Keep the raw failure visible; evaluate only the approved source-CI policy.
+python3 scripts/check_demo_exceptions.py checkov-terraform.json "$terraform_scan_exit" \
+  --evidence iac-evidence.json
 python3 scripts/check_scan_coverage.py terraform checkov-terraform.json
 checkov -d k8s --framework kubernetes --skip-download \
   --compact -o cli -o json --output-file-path console,checkov-kubernetes.json
@@ -598,8 +634,8 @@ under-ten-second revocation claim is supported.
 Before an approved deployment, supply the actual reviewed
 `operator_public_access_cidrs` through your Terraform input mechanism.
 No value is provided here. Without it, `terraform plan -input=false` fails.
-Do not use the mocked documentation addresses. The blocking findings and
-live-verification limits above remain unresolved.
+Do not use the mocked documentation addresses. The deployment-input requirement
+and live-verification limits above remain unresolved even when source CI passes.
 
 ```bash
 # Configure AWS credentials

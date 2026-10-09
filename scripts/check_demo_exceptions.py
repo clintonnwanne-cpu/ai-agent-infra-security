@@ -1,7 +1,9 @@
-"""Gate raw Checkov findings against two exact, conditional demo exceptions.
+"""Gate source CI without claiming deployment readiness or live enforcement.
 
-This verifies a required-input source contract, not approved operator addresses
-or live enforcement. Raw Checkov JSON is never changed. Run with Checkov 3.3.24.
+This verifies a required-input source contract, not approved operator addresses.
+The exact raw CIDR failure remains a deployment-input requirement, distinct
+from demo exceptions and scanner limitations. Raw Checkov JSON is unchanged.
+Run with Checkov 3.3.24.
 """
 import argparse
 import json
@@ -15,9 +17,10 @@ from scanner_evidence import EKS_FILE, CLASSIFICATIONS, verify_evidence
 EKS_PIN = "8a0efdbbc84180a26e0bacfd2b6fcfceac53b3b6"
 SOURCE = "../vendor/terraform-aws-eks"
 FILE = EKS_FILE
+DEPLOYMENT_INPUT = ("CKV_AWS_38", "module.eks.aws_eks_cluster.this")
 EXCEPTIONS = {
     ("CKV_AWS_39", "module.eks.aws_eks_cluster.this"):
-        "Approved demo public API design: required approved IPv4 CIDRs, private endpoint retained; actual operator input still pending.",
+        "Approved demo public API design: required approved IPv4 CIDRs, private endpoint retained; source CI does not evaluate actual operator input.",
     ("CKV_AWS_338", "module.eks.aws_cloudwatch_log_group.this[0]"):
         "Approved disposable-demo retention: 90 days; older forensic evidence expires. Review before persistent/compliance use.",
 }
@@ -116,6 +119,8 @@ def assess(report, scanner_exit):
                  for r in results["failed_checks"] if (r["check_id"], r["resource"]) not in EXCEPTIONS]
     return {"accepted_demo_exceptions": accepted, "blocking_findings": remaining,
             "operator_cidrs_supplied_or_approved": False,
+            "source_ci_contract_verified": False, "actual_operator_input_evaluated": False,
+            "deployment_readiness": "not_verified", "live_enforcement_verified": False,
             "limits": "Required-input source contract only; mocked tests and source scanning do not verify deployable CIDRs or live enforcement."}
 
 
@@ -134,13 +139,37 @@ def classify_limitations(result, report):
     kms = one([r for r in report["results"]["passed_checks"]
                if r["check_id"] == "CKV_TF_1" and r["resource"] == "module.eks.kms"], "passing immutable KMS check")
     require(kms["file_path"] == FILE, "Changed KMS check source")
-    # No approved operator input exists. Never silently close this item based
-    # on a source scanner accepting an unresolved variable or mock fixture.
-    one([r for r in report["results"]["failed_checks"] if r["check_id"] == "CKV_AWS_38"
-         and r["resource"] == "module.eks.aws_eks_cluster.this"], "unresolved operator CIDR finding")
+    # Never silently accept a scanner pass on unresolved input. Source CI may
+    # classify this exact FAILED record separately as a deployment requirement.
+    cidr = one([r for r in report["results"]["failed_checks"]
+                if (r["check_id"], r["resource"]) == DEPLOYMENT_INPUT], "unresolved operator CIDR finding")
+    require(cidr["file_path"] == FILE and cidr.get("caller_file_path") == "/main.tf"
+            and cidr["check_result"]["result"] == "FAILED", "Changed operator CIDR source/status")
     result["classified_scanner_limitations"] = accepted
     result["blocking_findings"] = [r for r in result["blocking_findings"]
                                     if (r["check_id"], r["resource"]) not in CLASSIFICATIONS]
+    return result
+
+
+def evaluate_source_ci(root, report, scanner_exit, evidence):
+    """All source, coverage and same-commit evidence guards precede classification."""
+    result = assess(report, scanner_exit)
+    verify_coverage("terraform", report)
+    verify_contract(root)
+    verified = verify_evidence(root.resolve().parent, evidence)
+    result = classify_limitations(result, report)
+    target = {"check_id": DEPLOYMENT_INPUT[0], "resource": DEPLOYMENT_INPUT[1]}
+    require(result["blocking_findings"].count(target) == 1, "Missing exact deployment-input target")
+    result["blocking_findings"].remove(target)
+    result["deployment_input_required"] = [{
+        **target, "raw_status": "FAILED", "scope": "source_ci_only",
+        "reason": "Required validated input and wiring verified with synthetic fixtures; actual approved operator ranges must be reviewed before deployment. This is not a scanner false positive or passed check."}]
+    result["source_ci_contract_verified"] = True
+    result["evidence"] = verified
+    result["limits"] = (
+        "Source CI verifies the required-input contract only. Synthetic fixtures do not approve operator addresses. "
+        "Rejecting /0 alone does not prove least privilege; review individual and combined range coverage, "
+        "ownership and current operator approval before deployment. Deployment readiness and live enforcement are not verified.")
     return result
 
 
@@ -153,16 +182,13 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("checkov-demo-exceptions.json"))
     args = parser.parse_args()
     report = json.loads(args.report.read_text())
-    result = assess(report, args.scanner_exit)
-    verify_coverage("terraform", report)
-    verify_contract(args.root)
-    verified = verify_evidence(args.root.resolve().parent, json.loads(args.evidence.read_text()))
-    result = classify_limitations(result, report)
-    result["evidence"] = verified
+    result = evaluate_source_ci(args.root, report, args.scanner_exit, json.loads(args.evidence.read_text()))
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(f"Accepted exactly {len(result['accepted_demo_exceptions'])} demo exceptions; "
           f"{len(result['classified_scanner_limitations'])} guarded scanner limitations; "
-          f"{len(result['blocking_findings'])} other findings remain blocking")
+          f"{len(result['deployment_input_required'])} deployment-input requirement; "
+          f"{len(result['blocking_findings'])} source-CI findings remain blocking")
+    print("Source contract verified; actual operator input, deployment readiness and live enforcement are NOT verified")
     return int(bool(result["blocking_findings"]))
 
 

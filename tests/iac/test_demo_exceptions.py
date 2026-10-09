@@ -102,6 +102,7 @@ resource "aws_cloudwatch_log_group" "this" {
                      ("variables.tf", "type        = list(string)", 'type = list(string)\n default = ["0.0.0.0/0"]'),
                      ("variables.tf", "> 0", ">= 0"),
                      (str(upstream.relative_to(root)), "endpoint_private_access = var.cluster_endpoint_private_access", "endpoint_private_access = false"),
+                     (str(upstream.relative_to(root)), "public_access_cidrs = var.cluster_endpoint_public_access_cidrs", 'public_access_cidrs = ["0.0.0.0/0"]'),
                      (str(upstream.relative_to(root)), "retention_in_days = var.cloudwatch_log_group_retention_in_days", "retention_in_days = 7")]
             for filename, before, after in cases:
                 with self.subTest(file=filename, before=before):
