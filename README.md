@@ -1,9 +1,11 @@
 # AI Agent Infrastructure Security
 
-Zero-trust security pattern for AI agents running on EKS. Demonstrates
-least-privilege IAM, Kubernetes RBAC, network isolation, and an emergency
-containment switch. Terraform defines the AWS infrastructure; Kubernetes
-manifests define the agent's namespace identity and network controls.
+An experimental infrastructure-security proof of concept for AI agents on
+EKS. Terraform and Kubernetes manifests define scoped permissions, explicit
+deny guardrails, network-policy configuration, and an emergency containment
+workflow. Verification currently consists of static analysis, offline tests,
+and mocked Terraform evidence; live AWS/EKS enforcement and deployment
+readiness remain unverified.
 
 ---
 
@@ -55,25 +57,37 @@ This is not a comprehensive block on every IAM write operation.
 **Agent ALLOW policy:**
 - Read EKS cluster metadata
 - Describe EC2 instances, subnets, VPCs
-- Read/write one dedicated S3 bucket (encrypted, versioned)
+- Selected S3 read/write actions on one encrypted, versioned state bucket;
+  effective functionality remains unverified. The explicit `kms:Decrypt`
+  deny conflicts with reading its KMS-encrypted objects.
 - Write its own CloudWatch logs
 
-**Agent DENY policy (always wins over Allow):**
-- Create or modify IAM roles or policies
-- Create or delete EKS clusters or node groups
-- Access Secrets Manager, SSM Parameter Store, or KMS decrypt
-- Access any S3 bucket other than its own
+**Agent DENY policy (explicit Deny overrides a matching Allow):**
+- Selected IAM actions: `CreateRole`, `AttachRolePolicy`, `PutRolePolicy`,
+  `PassRole`, `CreateUser`, `CreateAccessKey`, and `UpdateAssumeRolePolicy`
+- Selected EKS actions: `CreateCluster`, `DeleteCluster`,
+  `UpdateClusterConfig`, `UpdateClusterVersion`, `CreateNodegroup`, and
+  `DeleteNodegroup`
+- `secretsmanager:GetSecretValue`, `ssm:GetParameter`,
+  `ssm:GetParameters`, and `kms:Decrypt`
+- `s3:*` outside the dedicated state bucket and its objects
+
+These are the specific actions listed in `terraform/iam.tf`, not comprehensive
+blocks on every IAM write, EKS mutation, or secrets-service operation.
 
 ### 2. Kubernetes RBAC — Namespace-Scoped Role
 
-The agent's ServiceAccount is bound to a Role scoped to the
-`ai-agent` namespace only. Not a ClusterRole.
+The supplied manifest binds the agent's ServiceAccount to a Role scoped
+to the `ai-agent` namespace, rather than a ClusterRole. The permissions
+below describe that Role; effective permissions also depend on any other
+RoleBindings and ClusterRoleBindings. They are not current live
+authorization results.
 
 ```yaml
 # Agent CAN:
 - get/list/watch pods
 - get pod logs
-- get/create/update configmaps
+- get/list/watch/create/update/patch configmaps
 - get/list/watch services
 
 # Agent CANNOT:
@@ -85,19 +99,27 @@ The agent's ServiceAccount is bound to a Role scoped to the
 
 ### 3. IRSA — ServiceAccount to IAM Role Binding
 
-Short-lived, auto-rotating credentials via the cluster OIDC
-provider. No long-lived access keys anywhere.
+The configuration uses IRSA via the cluster OIDC provider for temporary
+workload credentials instead of embedding long-lived agent access keys.
+Credential issuance and rotation have not been verified live. This pattern
+does not attest to credentials elsewhere in an operator's environment.
 
 ### 4. NetworkPolicy — Egress Restriction
 
-The manifest permits outbound TCP 443 and 6443 and UDP 53, without
-destination restrictions. It does not restrict port 443 to AWS endpoints.
-Ingress is denied if the cluster network implementation enforces NetworkPolicy.
+The policy selects pods labeled `app=ai-agent`, denies ingress, and permits
+outbound TCP 443 and 6443 and UDP 53 without destination restrictions.
+It does not restrict port 443 to AWS endpoints. Enforcement depends on
+the cluster's network implementation and remains unverified; other
+applicable NetworkPolicies can also add allowed traffic.
 
 ### 5. KMS Encryption
 
-All Kubernetes secrets encrypted at rest with a dedicated KMS key.
-Automatic annual key rotation enabled.
+The configuration requests Kubernetes secrets encryption and enables
+KMS key rotation. With the current `create_kms_key = true` module default,
+EKS selects the module-created KMS key rather than the root-supplied
+`aws_kms_key.eks`; the root key is also referenced by the S3 state bucket.
+Actual encryption and rotation have not been verified against AWS.
+Mocked Terraform relationships are configuration evidence, not live proof.
 
 ---
 
@@ -375,7 +397,17 @@ still enables Terraform module retrieval.
 ### Verification evidence and remaining findings
 
 Local verification of the vendored KMS pin and guarded classifications reproduced the results
-below with the pinned tools. Commit-specific remote evidence is available in
+below with the pinned tools. All four CI jobs also passed on reviewed commit
+[`ad513ec`](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/commit/ad513ec74f9cbe15a2145d46037ea90a6452ad33)
+and merge commit
+[`8d13af1`](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/commit/8d13af1c2b0d9ee64f9ab383a13b71e057a09e12).
+Post-merge evidence:
+[20 offline tests and Bash syntax](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/actions/runs/37869296023),
+[IaC validation and scanner job logs](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/actions/runs/37869295988),
+and [raw Terraform findings and classification artifact](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/actions/runs/37869295988/artifacts/11588934194).
+The passing Terraform job is a source-CI policy result; all ten raw failed
+checks remain visible. Artifact downloads may require GitHub sign-in and
+are subject to retention. Commit-specific remote evidence is also available in
 [PR checks and downloadable artifacts](https://github.com/clintonnwanne-cpu/ai-agent-infra-security/pull/1/checks).
 Earlier evidence at `dd557a5` covered the CI/S3 closeout; it did not test the
 later required-input, vendor-integrity or scanner-classification gates.
@@ -637,6 +669,14 @@ No value is provided here. Without it, `terraform plan -input=false` fails.
 Do not use the mocked documentation addresses. The deployment-input requirement
 and live-verification limits above remain unresolved even when source CI passes.
 
+Review the actual account, region, resource names, and ServiceAccount IAM-role
+annotation in `k8s/rbac.yaml`; the manifest contains a fixed account/role ARN
+and does not automatically follow Terraform variable overrides. Establish
+approved operator Kubernetes access separately: this configuration does not
+enable automatic cluster-creator administrator access. Generating kubeconfig
+does not by itself grant Kubernetes permissions. Confirm the cluster network
+implementation enforces the supplied NetworkPolicy.
+
 ```bash
 # Configure AWS credentials
 aws configure
@@ -652,7 +692,10 @@ aws eks update-kubeconfig \
   --region us-east-2 \
   --name ai-agent-security-lab
 
-# Apply Kubernetes RBAC
+# Return to the repository root before resolving the Kubernetes manifest
+cd ..
+
+# Apply Kubernetes RBAC using the approved cluster context
 kubectl apply -f k8s/rbac.yaml
 
 # Verify RBAC is correctly scoped
@@ -671,13 +714,27 @@ kubectl auth can-i list pods \
 
 ## Cleanup
 
+Both S3 buckets use `force_destroy = true`; teardown can delete their stored
+objects and versions. Preserve required evidence before destroying the
+disposable lab. Cleanup is separate from incident recovery; do not remove
+quarantine or recreate agent access as an automatic recovery step.
+
 ```bash
 cd terraform
 terraform destroy
 ```
 
-EKS costs ~$0.10/hour for the control plane plus EC2 node costs.
-Destroy when not actively using the cluster.
+EKS control-plane charges depend on the Kubernetes support tier: currently
+$0.10/hour for standard support or $0.60/hour for extended support.
+The repository's Kubernetes `1.31` default is in extended support as of
+October 11, 2026, with extended support ending November 26, 2026.
+Nodes, NAT Gateway, storage, logging, KMS, public IPv4, and data transfer
+can add charges. Review the chosen version and full cost estimate before any
+approved deployment; these figures are not a cost cap.
+See [EKS pricing](https://aws.amazon.com/eks/pricing/) and the
+[EKS version lifecycle](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html).
+Destroy the disposable lab when it is no longer needed, after preserving
+required data and evidence.
 
 ---
 
